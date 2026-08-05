@@ -56,7 +56,10 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  # The explicit endpoints these cases send to. Presence is proven from the
+  # window inventory, because real tmux answers a display-message for an
+  # absent target from the current client's own window and still exits 0.
+  list-windows) printf 'other:win\noutside:window\n'; exit 0 ;;
 esac
 exit 0
 SH
