@@ -669,6 +669,60 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
   pass "fm-brief.sh: custom pause verb renders in every scaffold"
 }
 
+# Every ship mode tells the worker to declare a bounded wait around a long silent
+# call (the no-mistakes review and test steps run for ten-plus minutes with nothing
+# to print) and to record its resumption, so an idle pane is not read as a wedge
+# and a lingering paused: line cannot mask later work. Asserted against a
+# whitespace-folded copy of the generated brief so the contract, not its line
+# wrapping, is what the test pins.
+test_ship_brief_declares_bounded_wait_around_long_calls() {
+  local home mode id brief folded hits
+  home="$TMP_ROOT/long-call-pause-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-long-call-$mode"
+    FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
+      "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null 2>&1 \
+      || fail "fm-brief.sh --mode $mode exited non-zero"
+    brief="$home/data/$id/brief.md"
+    folded="$home/data/$id/brief.folded"
+    tr -s '[:space:]' ' ' < "$brief" > "$folded"
+
+    assert_grep 'a long validation or CI call you have already started and are now waiting out with nothing to print' \
+      "$folded" "$mode ship brief did not name a long silent call as a declared wait"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Append the `paused:` line BEFORE you begin waiting' "$folded" \
+      "$mode ship brief did not require declaring the wait before it starts"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'then a `working: {what it returned}` line as soon as the call comes back' "$folded" \
+      "$mode ship brief did not require recording the resumption"
+
+    # paused/blocked keep their existing distinct meanings.
+    assert_grep 'known external wait you expect to clear on its own' "$folded" \
+      "$mode ship brief changed what a declared wait means"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Use `blocked:` when you are stuck and need help.' "$folded" \
+      "$mode ship brief changed the blocked meaning"
+
+    # One owner: the instruction appears once, not restated elsewhere in the brief.
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    hits=$(grep -c -F 'Append the `paused:` line BEFORE you begin waiting' "$folded" || true)
+    [ "$hits" = 1 ] || fail "$mode ship brief restates the declared-wait instruction ($hits copies)"
+  done
+
+  # The configured pause verb still drives the new sentence.
+  FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
+    "$ROOT/bin/fm-brief.sh" brief-long-call-verb firstmate --mode no-mistakes >/dev/null 2>&1
+  folded="$home/data/brief-long-call-verb/brief.folded"
+  tr -s '[:space:]' ' ' < "$home/data/brief-long-call-verb/brief.md" > "$folded"
+  # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+  assert_grep 'Append the `awaiting:` line BEFORE you begin waiting' "$folded" \
+    "ship brief did not render the configured pause verb in the declared-wait instruction"
+
+  pass "fm-brief.sh: ship briefs declare and close a bounded wait around long silent calls"
+}
+
 test_scout_and_secondmate_load_decision_hold_policy() {
   local home scout charter
   home="$TMP_ROOT/decision-policy-home"
@@ -726,5 +780,6 @@ test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract
 test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
+test_ship_brief_declares_bounded_wait_around_long_calls
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold

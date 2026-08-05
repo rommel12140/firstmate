@@ -11,6 +11,8 @@
 # source):
 #   (a) active run-step is authoritative                          -> run-step
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
+#   (b2) declared pause outranks INFERRED working (full + coarse) -> status-log,
+#        while run OUTCOMES (parked/done/checks-green/failed) still win
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
 #   (d) terminal run-step (passed/failed) is authoritative        -> run-step
 #   (e) cross-branch attribution: this branch's own run found via list lookup
@@ -439,6 +441,121 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
+}
+
+# A declared external-wait pause (paused: <why>) outranks the INFERRED working
+# state of an active run: working only means "a run is active", and a worker
+# deliberately waiting out a known external event (absent CI runners, a rate
+# limit, a long silent step) is exactly the case that inference misreads as a
+# wedge suspect. The pause must NEVER mask a run OUTCOME: a parked gate, a done
+# run (including checks-green), and a failed run still win. These cases pin that
+# precedence in both directions.
+test_declared_pause_outranks_running_run() {
+  reset_fakes
+  local d; d=$(new_case pause-over-running)
+  make_repo_on_branch "$d/wt" fm/feat-pr
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pr.meta" "window=fm:fm-feat-pr" "worktree=$d/wt" "kind=ship"
+  printf 'working: started\npaused: waiting out the review step, nothing to print\n' > "$d/state/feat-pr.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/feat-pr)"
+  local out; out=$(run_crew_state "$d" feat-pr)
+  assert_contains "$out" "state: paused" "declared pause over an active running run -> paused"
+  assert_contains "$out" "source: status-log" "declared pause comes from the status log"
+  assert_contains "$out" "waiting out the review step" "pause detail preserves the declared reason"
+  assert_contains "$out" "declared pause outranks active run" "pause detail names the overridden run"
+  assert_not_contains "$out" "state: working" "declared pause is not overruled by an inferred working state"
+  pass "declared pause outranks an active running run"
+}
+
+test_declared_pause_outranks_ci_monitoring_not_green() {
+  reset_fakes
+  local d; d=$(new_case pause-over-ci-wait)
+  make_repo_on_branch "$d/wt" fm/feat-pciw
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pciw.meta" "window=fm:fm-feat-pciw" "worktree=$d/wt" "kind=ship"
+  printf 'paused: fork Actions cannot obtain a runner, waiting on the account fix\n' > "$d/state/feat-pciw.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-pciw)"
+  FM_FAKE_CI_LOGS="no CI checks reported yet, waiting for checks to register..."
+  local out; out=$(run_crew_state "$d" feat-pciw)
+  assert_contains "$out" "state: paused" "declared pause over a not-yet-green ci monitor -> paused"
+  assert_contains "$out" "cannot obtain a runner" "pause detail preserves the declared reason"
+  assert_not_contains "$out" "state: working" "not-yet-green ci monitor must not overrule the declared pause"
+  pass "declared pause outranks a not-yet-green ci-monitoring run"
+}
+
+test_ci_green_outcome_beats_declared_pause() {
+  reset_fakes
+  local d; d=$(new_case ci-green-over-pause)
+  make_repo_on_branch "$d/wt" fm/feat-cgp
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cgp.meta" "window=fm:fm-feat-cgp" "worktree=$d/wt" "kind=ship"
+  printf 'paused: waiting out CI\n' > "$d/state/feat-cgp.status"
+  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cgp)"
+  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
+  local out; out=$(run_crew_state "$d" feat-cgp)
+  assert_contains "$out" "state: done" "checks green while paused -> done, never masked"
+  assert_contains "$out" "checks green" "checks-green detail survives the pause"
+  assert_not_contains "$out" "state: paused" "a green PR must never hide behind a declared pause"
+  pass "checks-green outcome beats a declared pause"
+}
+
+test_parked_gate_beats_declared_pause() {
+  reset_fakes
+  local d; d=$(new_case parked-over-pause)
+  make_repo_on_branch "$d/wt" fm/feat-pgp
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pgp.meta" "window=fm:fm-feat-pgp" "worktree=$d/wt" "kind=ship"
+  printf 'paused: waiting out validation\n' > "$d/state/feat-pgp.status"
+  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-pgp)"
+  local out; out=$(run_crew_state "$d" feat-pgp)
+  assert_contains "$out" "state: parked" "gate while paused -> parked, never masked"
+  assert_contains "$out" "parked at review" "gate detail survives the pause"
+  assert_not_contains "$out" "state: paused" "a waiting gate must never hide behind a declared pause"
+  pass "a parked gate beats a declared pause"
+}
+
+test_run_outcomes_beat_declared_pause() {
+  reset_fakes
+  local d out
+  d=$(new_case passed-over-pause)
+  make_repo_on_branch "$d/wt" fm/feat-pop
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pop.meta" "window=fm:fm-feat-pop" "worktree=$d/wt" "kind=ship"
+  printf 'paused: waiting out validation\n' > "$d/state/feat-pop.status"
+  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-pop)"
+  out=$(run_crew_state "$d" feat-pop)
+  assert_contains "$out" "state: done" "passed run while paused -> done, never masked"
+
+  reset_fakes
+  d=$(new_case failed-over-pause)
+  make_repo_on_branch "$d/wt" fm/feat-fop
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-fop.meta" "window=fm:fm-feat-fop" "worktree=$d/wt" "kind=ship"
+  printf 'paused: waiting out validation\n' > "$d/state/feat-fop.status"
+  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-fop)"
+  out=$(run_crew_state "$d" feat-fop)
+  assert_contains "$out" "state: failed" "failed run while paused -> failed, never masked"
+  pass "terminal run outcomes beat a declared pause"
+}
+
+test_declared_pause_outranks_coarse_running_run() {
+  reset_fakes
+  local d short; d=$(new_case pause-over-coarse)
+  make_repo_on_branch "$d/wt" fm/feat-pcr
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-pcr.meta" "window=fm:fm-feat-pcr" "worktree=$d/wt" "kind=ship"
+  printf 'paused: waiting out a long test step\n' > "$d/state/feat-pcr.status"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/feat-pcr ${short}  2026-08-05 10:00
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-pcr)
+  assert_contains "$out" "state: paused" "declared pause over a coarse running run -> paused"
+  assert_contains "$out" "waiting out a long test step" "pause detail preserves the declared reason"
+  assert_not_contains "$out" "state: working" "coarse background run must not overrule the declared pause"
+  pass "declared pause outranks a coarse-attributed running run"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1315,6 +1432,12 @@ test_stale_blocked_superseded
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
+test_declared_pause_outranks_running_run
+test_declared_pause_outranks_ci_monitoring_not_green
+test_ci_green_outcome_beats_declared_pause
+test_parked_gate_beats_declared_pause
+test_run_outcomes_beat_declared_pause
+test_declared_pause_outranks_coarse_running_run
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done

@@ -332,7 +332,8 @@ window_to_task() {
 # follows the "signal:" prefix. Non-.status arguments (e.g. .turn-ended markers,
 # which never carry a verb) are skipped. A 1 here is NOT "benign" on its own: a
 # no-verb signal (a bare turn-end, a working: note) is only benign when the crew is
-# also provably working (signal_crew_provably_working below); otherwise it surfaces.
+# also provably working or in a declared external-wait pause
+# (signal_crew_working_or_paused below); otherwise it surfaces.
 signal_reason_is_actionable() {  # <file> ...
   local f last
   for f in "$@"; do
@@ -356,8 +357,11 @@ signal_reason_is_actionable() {  # <file> ...
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
 #             torn-down/unknown crew, or an unreadable verdict).
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
-# authoritatively (not the status log) is what keeps run-step precedence: a crew
-# that appended paused: but then STARTED a run reports working, never paused.
+# authoritatively (not the status log) keeps run OUTCOMES in charge: a paused crew
+# whose run parks at a gate, finishes, or fails reports that outcome, never
+# paused. A declared pause outranks only the INFERRED working state of an active
+# run (fm-crew-state.sh owns that precedence), so a worker deliberately waiting
+# out a known external event is classed paused, not wedge-suspect working.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
@@ -393,12 +397,23 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
-# 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is provably
-# working; 1 (actionable/surface) if any is not, or no task can be resolved. Pass the
-# same space-separated file list as signal_reason_is_actionable. Files are mapped to
-# task ids by stripping the .status / .turn-ended suffix; a no-verb wake with nothing
-# provably working must surface, so an empty/unresolvable list returns 1.
-signal_crew_provably_working() {  # <file> ...
+# 0 (benign/absorb) if EVERY task referenced by a no-verb "signal:" wake is either
+# provably working or in a declared external-wait pause; 1 (actionable/surface) if
+# any is neither, or no task can be resolved. Pass the same space-separated file
+# list as signal_reason_is_actionable. The paused arm is what lets a declared wait
+# also silence harness-written turn-end churn: a crew waiting out an external
+# event with short recheck turns fires a turn-ended signal every few minutes, and
+# each completed turn is proof of life, not a finish. A real finish appends a
+# captain-relevant verb that signal_reason_is_actionable surfaces before this
+# predicate runs, and a run outcome (parked/done/failed) overrides the pause
+# inside fm-crew-state.sh, so only the declared, expected idle is absorbed here.
+# A paused crew that then truly dies stops producing turn-ends entirely and is
+# caught by the stale path's bounded pause cadence and the heartbeat fleet
+# review. Files are mapped to task ids by stripping the .status / .turn-ended
+# suffix; a no-verb wake with nothing working or paused must surface, so an
+# empty/unresolvable list returns 1. One crew_absorb_class read per task: the
+# verdict may cost a bounded no-mistakes call, so it is never read twice.
+signal_crew_working_or_paused() {  # <file> ...
   local f base task seen=""
   for f in "$@"; do
     base=${f##*/}
@@ -410,7 +425,10 @@ signal_crew_provably_working() {  # <file> ...
     [ -n "$task" ] || continue
     case " $seen " in *" $task "*) continue ;; esac
     seen="$seen $task"
-    crew_is_provably_working "$task" || return 1
+    case "$(crew_absorb_class "$task")" in
+      working|paused) ;;
+      *) return 1 ;;
+    esac
   done
   [ -n "$seen" ] || return 1
   return 0

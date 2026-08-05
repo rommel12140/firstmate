@@ -124,13 +124,15 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # than wake firstmate's LLM for each, this watcher classifies every wake in bash
 # and ABSORBS the benign majority - it advances the suppression marker, logs to a
 # debug log, and keeps blocking WITHOUT enqueuing or exiting. The no-verb signal
-# / stale path is absorb-only-when-provably-working: such a wake is absorbed ONLY
-# while the crew shows positive evidence it is still working (an actively-running
-# no-mistakes step, or a busy pane, via crew_is_provably_working over
-# fm-crew-state.sh); a crew that stopped its turn with no running pipeline and no
-# busy pane is SURFACED, so a finish reported only through interactive pane menus
-# (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
-# signal, a no-verb signal whose crew is not provably working, any check, a stale
+# / stale path is absorb-only-when-provably-working-or-paused: such a wake is
+# absorbed ONLY while the crew shows positive evidence it is still working (an
+# actively-running no-mistakes step, or a busy pane, via crew_is_provably_working
+# over fm-crew-state.sh) or its authoritative current state is a declared
+# external-wait pause; a crew that stopped its turn with no running pipeline, no
+# busy pane, and no declared wait is SURFACED, so a finish reported only through
+# interactive pane menus (no done: status) is never swallowed. An ACTIONABLE wake
+# (a captain-relevant signal, a no-verb signal whose crew is neither provably
+# working nor in a declared pause, any check, a stale
 # pane whose crew is not provably working, a provably-working stale past the
 # threshold, or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
@@ -883,17 +885,22 @@ EOF
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
     #   - or it is a no-verb wake (a bare turn-end, a working: note) whose crew is
-    #     NOT provably working - the crew stopped its turn with no actively-running
-    #     pipeline and no busy pane, so it may be done (even via an interactive menu
+    #     NEITHER provably working NOR in a declared external-wait pause - the
+    #     crew stopped its turn with no actively-running pipeline, no busy pane,
+    #     and no declared wait, so it may be done (even via an interactive menu
     #     that wrote no done: status), waiting on a decision, or wedged. Absorbing
-    #     such a turn-end is exactly the swallowed-finish this change guards against.
+    #     such a turn-end is exactly the swallowed-finish this change guards
+    #     against. The paused arm keeps a declared wait's own short recheck turns
+    #     from waking a supervisor every few minutes; a paused crew's real finish
+    #     or gate still surfaces through the captain-relevant-verb test above and
+    #     the run-outcome precedence inside fm-crew-state.sh.
     # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
-    # whose crew IS provably working) in always-on mode -> advance the markers so it
-    # will not re-fire, log, and keep blocking without enqueuing. The provably-working
-    # check is the only costly one (it may run a bounded no-mistakes call), so the ||
-    # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
+    # whose crew IS provably working or paused) in always-on mode -> advance the markers so it
+    # will not re-fire, log, and keep blocking without enqueuing. The working-or-
+    # paused check is the only costly one (it may run a bounded no-mistakes call),
+    # so the || ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
     # shellcheck disable=SC2086  # $files is a space-separated status-path list (ids carry no spaces)
-    if afk_present || signal_reason_is_actionable $files || ! signal_crew_provably_working $files; then
+    if afk_present || signal_reason_is_actionable $files || ! signal_crew_working_or_paused $files; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
