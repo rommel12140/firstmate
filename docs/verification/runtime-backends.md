@@ -135,6 +135,36 @@ tests/fm-tmux-submit-busy.test.sh
 Expected structural matrix: real text on any content row is pending; all-empty complete boxes are empty; unreadable, incomplete, or unsafe boxes are unknown; and non-bordered panes retain cursor-row compatibility.
 Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; and only a proven empty composer succeeds directly.
 
+### Endpoint presence
+
+Target-resolution behavior behind the cheap presence read (`fm_backend_tmux_target_exists`) was measured on 2026-08-05 with tmux 3.7b on macOS 26.3 arm64, on a private socket holding two live windows (`fm-abc` and `2.1.221`) and a real attached client.
+
+```sh
+tmux -L fmevid display-message -p -t sess:fm-ghost '#{session_name}:#{window_name}'
+tmux -L fmevid list-panes -t '=sess:=fm-ghost'
+tmux -L fmevid list-panes -t '=sess:=2.1.221'
+tmux -L fmevid list-windows -a -F '#{session_name}:#{window_name}'
+```
+
+Observed output:
+
+```text
+sess:fm-abc
+rc=0
+rc=1
+rc=1
+ctl:zsh
+sess:fm-abc
+sess:2.1.221
+```
+
+`display-message` answered an absent target from the attached client's own active window and still exited 0, so an exit-code read of it can never report an absent endpoint.
+The `=name` exact-match selector rejected the absent `fm-ghost`, but it also rejected the live `2.1.221`, because tmux reads a digit-shaped window name as an index rather than a name.
+A plain selector fails the other way: `list-panes -t sess:fm-a` exits 0 against a live `sess:fm-abc` by substring match.
+Only the literal `list-windows -a` inventory answered all three cases correctly, which is why the presence read matches recorded names as text instead of through a target selector.
+
+The regression that pins this is `tests/fm-tmux-agent-liveness.test.sh`, which holds a real attached client from a second private tmux server and asserts the fallback is still live before each presence case, so a tmux release that changed the fallback cannot turn those cases into silent passes.
+
 ### Cleanup endpoint identity
 
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.

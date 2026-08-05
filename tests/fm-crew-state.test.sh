@@ -86,6 +86,17 @@ case "${1:-}" in
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     printf '%%1\n' ;;
+  list-windows)
+    # Endpoint presence is read from a window inventory, never from a
+    # display-message exit code: real tmux answers an absent target from the
+    # current client's own window and still exits 0. Every window this case
+    # recorded exists, unless the case declares the endpoint gone.
+    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    for meta in "${FM_STATE_OVERRIDE:-/nonexistent}"/*.meta; do
+      [ -f "$meta" ] || continue
+      grep '^window=' "$meta" | cut -d= -f2-
+    done
+    exit 0 ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     if [ "${FM_FAKE_BUSY:-0}" = 1 ]; then printf 'work in progress\n%s\n' "${FM_FAKE_BUSY_TEXT:-esc to interrupt}"
