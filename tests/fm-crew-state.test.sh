@@ -11,8 +11,9 @@
 # source):
 #   (a) active run-step is authoritative                          -> run-step
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
-#   (b2) declared pause outranks INFERRED working (full + coarse) -> status-log,
-#        while run OUTCOMES (parked/done/checks-green/failed) still win
+#   (b2) declared pause outranks INFERRED working, FULL attribution only
+#        -> status-log, while run OUTCOMES (parked/done/checks-green/failed)
+#        still win, and a coarse-attributed run keeps working
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
 #   (d) terminal run-step (passed/failed) is authoritative        -> run-step
 #   (e) cross-branch attribution: this branch's own run found via list lookup
@@ -448,8 +449,9 @@ test_gate_block_parked_not_superseded() {
 # deliberately waiting out a known external event (absent CI runners, a rate
 # limit, a long silent step) is exactly the case that inference misreads as a
 # wedge suspect. The pause must NEVER mask a run OUTCOME: a parked gate, a done
-# run (including checks-green), and a failed run still win. These cases pin that
-# precedence in both directions.
+# run (including checks-green), and a failed run still win, and the override is
+# limited to full `axi status` attribution, where those outcomes are visible.
+# These cases pin that precedence in both directions.
 test_declared_pause_outranks_running_run() {
   reset_fakes
   local d; d=$(new_case pause-over-running)
@@ -538,7 +540,12 @@ test_run_outcomes_beat_declared_pause() {
   pass "terminal run outcomes beat a declared pause"
 }
 
-test_declared_pause_outranks_coarse_running_run() {
+# The override is FULL-attribution only. The coarse runs-list fallback reports
+# just running/completed/failed/cancelled, so a run parked at a gate is
+# indistinguishable there from one still validating: honouring the pause would
+# hide a waiting gate. A coarse-attributed run therefore keeps its working
+# verdict, and with it the pre-change wedge escalation.
+test_coarse_running_run_keeps_working_despite_pause() {
   reset_fakes
   local d short; d=$(new_case pause-over-coarse)
   make_repo_on_branch "$d/wt" fm/feat-pcr
@@ -552,10 +559,10 @@ test_declared_pause_outranks_coarse_running_run() {
 EOF
 )"
   local out; out=$(run_crew_state "$d" feat-pcr)
-  assert_contains "$out" "state: paused" "declared pause over a coarse running run -> paused"
-  assert_contains "$out" "waiting out a long test step" "pause detail preserves the declared reason"
-  assert_not_contains "$out" "state: working" "coarse background run must not overrule the declared pause"
-  pass "declared pause outranks a coarse-attributed running run"
+  assert_contains "$out" "state: working" "coarse running run keeps working despite a declared pause"
+  assert_contains "$out" "source: run-step" "coarse verdict still comes from the run-step"
+  assert_not_contains "$out" "state: paused" "the pause override must not apply to coarse attribution"
+  pass "coarse-attributed running run keeps working despite a declared pause"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1437,7 +1444,7 @@ test_declared_pause_outranks_ci_monitoring_not_green
 test_ci_green_outcome_beats_declared_pause
 test_parked_gate_beats_declared_pause
 test_run_outcomes_beat_declared_pause
-test_declared_pause_outranks_coarse_running_run
+test_coarse_running_run_keeps_working_despite_pause
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done

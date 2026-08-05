@@ -39,12 +39,16 @@
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
-#      agree, and are reported as parked. A declared external-wait pause (the
-#      paused verb) as the last log line outranks an INFERRED working verdict:
-#      working only means "a run is active", and a deliberately declared wait
-#      (absent CI runners, a rate limit, a long silent validation step) is
-#      exactly what that inference misreads as a wedge suspect. Run OUTCOMES are
-#      never masked: parked, done, and failed still win over a pause.
+#      agree, and are reported as parked. Under FULL `axi status` attribution
+#      only, a declared external-wait pause (the paused verb) as the last log
+#      line outranks an INFERRED working verdict: working only means "a run is
+#      active", and a deliberately declared wait (absent CI runners, a rate
+#      limit, a long silent validation step) is exactly what that inference
+#      misreads as a wedge suspect. Run OUTCOMES are never masked: parked, done,
+#      and failed still win over a pause. The coarse runs-list fallback is
+#      excluded because it reports only running/completed/failed/cancelled, so a
+#      run parked at a gate is indistinguishable from one still validating and
+#      the pause would mask it.
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
@@ -543,7 +547,14 @@ if [ "$HAVE_RUN" = 1 ]; then
   # stay authoritative: a parked gate, a done run (including the ci-green
   # override above), and a failed run are facts a pause must never mask, so
   # they still surface immediately.
-  if [ "$RUN_STATE" = working ] && status_is_paused "$LOG_LINE"; then
+  #
+  # FULL attribution only. The coarse runs-list fallback carries no step or gate
+  # detail (only running/completed/failed/cancelled), so a run parked at a gate
+  # reads there as plain `running` -> working; applying the override to it would
+  # hide that waiting gate behind the pause instead of masking only an
+  # inference. A coarse-attributed run therefore keeps its working verdict and
+  # the wedge escalation that goes with it.
+  if [ "$RUN_SOURCE" = full ] && [ "$RUN_STATE" = working ] && status_is_paused "$LOG_LINE"; then
     emit paused status-log "$(status_line_note "$LOG_LINE")${SEP}declared pause outranks active run ($RUN_DETAIL)"
   fi
 

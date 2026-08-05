@@ -707,7 +707,7 @@ test_ship_brief_declares_bounded_wait_around_long_calls() {
 
     # One owner: the instruction appears once, not restated elsewhere in the brief.
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-    hits=$(grep -c -F 'Append the `paused:` line BEFORE you begin waiting' "$folded" || true)
+    hits=$(grep -o -F 'Append the `paused:` line BEFORE you begin waiting' "$folded" | wc -l | tr -d ' ')
     [ "$hits" = 1 ] || fail "$mode ship brief restates the declared-wait instruction ($hits copies)"
   done
 
