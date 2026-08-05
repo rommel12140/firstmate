@@ -146,22 +146,21 @@ tmux -L fmevid list-panes -t '=sess:=2.1.221'
 tmux -L fmevid list-windows -a -F '#{session_name}:#{window_name}'
 ```
 
-Observed output:
+Observed output and exit codes, one block per command above:
 
 ```text
-sess:fm-abc
-rc=0
-rc=1
-rc=1
+sess:fm-abc          (exit 0)
+                     (exit 1)
+                     (exit 1)
 ctl:zsh
 sess:fm-abc
-sess:2.1.221
+sess:2.1.221         (exit 0)
 ```
 
 `display-message` answered an absent target from the attached client's own active window and still exited 0, so an exit-code read of it can never report an absent endpoint.
 The `=name` exact-match selector rejected the absent `fm-ghost`, but it also rejected the live `2.1.221`, because tmux reads a digit-shaped window name as an index rather than a name.
 A plain selector fails the other way: `list-panes -t sess:fm-a` exits 0 against a live `sess:fm-abc` by substring match.
-Only the literal `list-windows -a` inventory answered all three cases correctly, which is why the presence read matches recorded names as text instead of through a target selector.
+Only the literal `list-windows -a` inventory answered every case correctly, which is why the presence read matches recorded names as text instead of through a target selector.
 
 The regression that pins this is `tests/fm-tmux-agent-liveness.test.sh`, which holds a real attached client from a second private tmux server and asserts the fallback is still live before each presence case, so a tmux release that changed the fallback cannot turn those cases into silent passes.
 
