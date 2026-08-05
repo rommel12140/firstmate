@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # tests/fm-tmux-agent-liveness.test.sh - portable regression for the tmux
-# agent-liveness classifier (bin/backends/tmux.sh).
+# agent-liveness classifier and the cheap tmux presence primitive
+# (bin/backends/tmux.sh).
 #
 # It runs REAL processes in a REAL tmux server on a private socket (`-L`), and
 # needs no harness and no credentials, so it runs everywhere CI runs tmux. The
@@ -27,10 +28,14 @@ SLEEP_BIN=$(command -v sleep) || { echo "skip: sleep not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-liveness-$$"
+# A second private server exists only to hold a real attached client on
+# SOCKET; see the presence-primitive section at the end of this file.
+CLIENT_SOCKET="fm-liveness-client-$$"
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-liveness.XXXXXX")
 SESSION=liveness
 
 cleanup_all() {
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server >/dev/null 2>&1 || true
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
 }
@@ -226,6 +231,85 @@ fm_backend_tmux_foreground_comms "$SESSION:no-such-window" >/dev/null \
 [ "$(fm_backend_agent_state tmux "$SESSION:no-such-window")" = missing ] \
   || fail "an absent window in a readable session must classify missing, not whatever the fallback pane runs"
 pass "tmux liveness: an absent window classifies missing rather than inheriting tmux's active-window fallback"
+
+# --- the cheap presence primitive, with a REAL CLIENT ATTACHED --------------
+# fm_backend_target_exists is the shared alive/dead read behind the
+# session-start fleet digest and the recovery digests, and it is the entry
+# condition for stuck-worker recovery. Built on a bare `display-message -t`
+# exit code it answered `alive` for every target, including a window that
+# existed nowhere, so the digest could never report a dead endpoint.
+#
+# An attached client is the condition that gives that fallback something to
+# answer from, so the cases below only prove anything while one is attached.
+# The client comes from a SECOND private tmux server, which needs no pty
+# helper and keeps this as portable as the rest of the file.
+
+cat > "$LAB/attach.sh" <<SH
+#!/bin/sh
+exec "$REAL_TMUX" -L "$SOCKET" attach -t "$SESSION"
+SH
+chmod +x "$LAB/attach.sh"
+"$REAL_TMUX" -L "$CLIENT_SOCKET" new-session -d -s attach -x 80 -y 24 "$LAB/attach.sh" \
+  || fail "could not start the client-holding tmux server"
+
+attached_client=
+for _ in $(seq 1 100); do
+  attached_client=$("$REAL_TMUX" -L "$SOCKET" list-clients -F '#{client_tty}' 2>/dev/null | head -1)
+  [ -n "$attached_client" ] && break
+  sleep 0.1
+done
+[ -n "$attached_client" ] \
+  || fail "no client ever attached, so the presence cases would prove nothing about the fallback"
+
+# The anti-vacuous assertion: the raw probe the primitive used to be must still
+# succeed here AND describe a different, existing window. Without this, a tmux
+# release that started failing the absent target would turn every case below
+# into a silent pass that no longer covers the defect.
+raw_readback=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:no-such-window" \
+  '#{session_name}:#{window_name}' 2>/dev/null) \
+  || fail "display-message failed for an absent target, so the active-window fallback is not live in this tmux"
+[ "$raw_readback" != "$SESSION:no-such-window" ] && [ -n "${raw_readback#*:}" ] \
+  || fail "display-message did not fall back to another window (read back '$raw_readback'), so these cases would prove nothing"
+pass "tmux presence: the display-message active-window fallback is live with a client attached (absent target read back as '$raw_readback')"
+
+fm_backend_target_exists tmux "$SESSION:no-such-window" \
+  && fail "an absent window must NOT read as present while a client is attached"
+pass "tmux presence: an absent window reads absent with a client attached"
+
+fm_backend_target_exists tmux "no-such-session:no-such-window" \
+  && fail "a window in a session that does not exist must not read as present"
+pass "tmux presence: a window in a nonexistent session reads absent"
+
+fm_backend_target_exists tmux "$SESSION:idle" \
+  || fail "a live window must still read as present"
+pass "tmux presence: a live window reads present"
+
+fm_backend_target_exists tmux "idle" \
+  || fail "the legacy bare window-name form must still resolve a live window"
+fm_backend_target_exists tmux "no-such-window" \
+  && fail "the legacy bare window-name form must not read an absent window as present"
+pass "tmux presence: the legacy bare window-name form resolves present and absent correctly"
+
+# A ghost target that is a strict prefix of a live window name. tmux target
+# selectors match by pattern and substring, so a selector-based probe reports
+# this absent task as present.
+new_window fm-presence-abc "$SLEEP_BIN" 900
+fm_backend_target_exists tmux "$SESSION:fm-presence-abc" \
+  || fail "the substring-bait window is not present, so the prefix case would prove nothing"
+fm_backend_target_exists tmux "$SESSION:fm-presence-ab" \
+  && fail "a ghost target that is a prefix of a live window name must read absent, not match by substring"
+pass "tmux presence: a ghost target that is a prefix of a live window name reads absent"
+
+# A live window whose name is digit-shaped. tmux reads such a name as an index
+# through a target selector, so the `=name` exact-match form reports this LIVE
+# window absent - a false absence, the direction that can relaunch onto live
+# work.
+new_window 9.9.221 "$SLEEP_BIN" 900
+fm_backend_target_exists tmux "$SESSION:9.9.221" \
+  || fail "a live window with a digit-shaped name must read present, not be lost to selector index parsing"
+fm_backend_target_exists tmux "$SESSION:9.9.999" \
+  && fail "an absent digit-shaped window name must still read absent"
+pass "tmux presence: a live window with a digit-shaped name reads present and its ghost sibling reads absent"
 
 cleanup_all
 trap - EXIT

@@ -224,6 +224,53 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
       done
 }
 
+# fm_backend_tmux_target_exists: does <target> name a tmux window that really
+# exists? The cheap presence half of the liveness contract owned by
+# bin/fm-backend.sh's fm_backend_target_exists.
+#
+# It never asks `display-message -t <target>`. That command resolves an absent
+# target to the current client's own window and still exits 0 - the same trap
+# bin/fm-spawn.sh's treehouse-get wait documents ("the window id never lies") -
+# so an exit-code read of it reports every target alive, including a window
+# that exists nowhere and a session that no longer exists at all.
+#
+# The recorded name must instead appear literally in a successful window
+# inventory, which is the same evidence fm_backend_tmux_agent_state requires,
+# so the cheap presence read and the recovery-grade classifier can never
+# disagree about whether the endpoint is there.
+#
+# The inventory is matched as text rather than through a tmux target selector,
+# because selector matching is not exact in either direction: a plain selector
+# resolves a ghost `sess:fm-a` onto a live `sess:fm-abc` by substring, and the
+# `=name` exact form false-negatives on a live window whose name is
+# digit-shaped, which tmux reads as an index instead. Both cases are recorded
+# in docs/verification/runtime-backends.md. The second is the dangerous one: a
+# false absence is what licenses relaunching onto live work.
+#
+# A failed inventory means the server or session is gone, which IS "does not
+# exist" for this read - the boolean contract fm_backend_target_exists already
+# applies to every other backend.
+fm_backend_tmux_target_exists() {  # <target>
+  local target=$1 inventory line
+  [ -n "$target" ] || return 1
+  inventory=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null) || return 1
+  case "$target" in
+    *:*)
+      printf '%s\n' "$inventory" | LC_ALL=C grep -Fqx -- "$target"
+      ;;
+    *)
+      # A bare window name, the legacy recorded form: accept it in any session,
+      # the same lookup fm_backend_tmux_resolve_bare_selector performs.
+      while IFS= read -r line; do
+        [ "${line##*:}" = "$target" ] && return 0
+      done <<EOF
+$inventory
+EOF
+      return 1
+      ;;
+  esac
+}
+
 # fm_backend_tmux_agent_state: recovery-grade harness-agent state for one
 # recorded target. See bin/fm-backend.sh's fm_backend_agent_state for the
 # shared state vocabulary and docs/tmux-backend.md "Agent liveness probe" for
