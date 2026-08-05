@@ -140,9 +140,12 @@ make_fake_fleet_sync_root() {
   mkdir -p "$fake_root/bin"
   cat > "$fake_root/bin/fm-fleet-sync.sh" <<'SH'
 #!/usr/bin/env bash
-[ -z "${FM_FAKE_FLEET_SYNC_STARTED_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_STARTED_MARKER"
 printf '%s\n' 'alpha: synced'
 printf '%s\n' 'beta: skipped: no origin remote'
+# Marker AFTER the partial lines: its existence proves the output above has
+# already reached the parent's capture file (bash printf writes directly), so
+# the fake clock in run_bootstrap_timeout_case can safely gate on it.
+[ -z "${FM_FAKE_FLEET_SYNC_STARTED_MARKER:-}" ] || : > "$FM_FAKE_FLEET_SYNC_STARTED_MARKER"
 exec perl -e 'sleep 300'
 SH
   chmod +x "$fake_root/bin/fm-fleet-sync.sh"
@@ -179,14 +182,26 @@ run_bootstrap_timeout_case() {
   git_record=${6:-}
   wait_for_marker=${7:-0}
   [ "$#" -lt 4 ] || override=$4
+  # Every timeout case gates its fake clock on the fixture's started marker
+  # (see sleep below); callers that do not need the marker for their own
+  # assertions still get one so the partial-relay race stays closed.
+  [ -n "$started_marker" ] || started_marker="$home/.fleet-sync-started"
   (
     # shellcheck disable=SC2317,SC2329 # Exported and invoked by the bootstrap subprocess.
     sleep() {
-      local inc=${1:-1}
+      local inc=${1:-1} spins=0
+      # Hold the simulated clock while the backgrounded fleet-sync fixture has
+      # not yet written its partial output (it touches the started marker only
+      # after printing), so the fake timeout can never outrun a child the
+      # kernel is still spawning. Bounded so a genuinely broken child still
+      # reaches the timeout path loudly instead of hanging the test.
+      while [ -n "${FM_FAKE_FLEET_SYNC_STARTED_MARKER:-}" ] \
+        && [ ! -e "$FM_FAKE_FLEET_SYNC_STARTED_MARKER" ] \
+        && [ "$spins" -lt 100 ]; do
+        command sleep 0.01
+        spins=$((spins + 1))
+      done
       SECONDS=$((SECONDS + inc))
-      # Advance fake time quickly, but yield on every tick so the background
-      # fleet-sync process can deterministically write its partial output before
-      # the simulated timeout kills it, even on a busy full-suite runner.
       command sleep 0.01
     }
     # shellcheck disable=SC2317,SC2329 # Exported and invoked by the bootstrap subprocess.

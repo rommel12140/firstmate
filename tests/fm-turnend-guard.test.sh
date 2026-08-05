@@ -926,7 +926,9 @@ SH
 exit 0
 SH
   chmod +x "$repo/bin/fm-turnend-guard.sh" "$repo/bin/fm-arm-pretool-check.sh"
-  out=$(PLUGIN="$ext" FM_HOME="$home" FM_GUARD_LOG="$log" node --input-type=module 2>&1 <<'EOF'
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
+  out=$(PLUGIN="$ext" FM_HOME="$home" FM_GUARD_LOG="$log" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'EOF'
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -991,7 +993,9 @@ SH
 exit 0
 SH
   chmod +x "$repo/bin/fm-turnend-guard.sh" "$repo/bin/fm-arm-pretool-check.sh"
-  out=$(PLUGIN="$ext" FM_HOME="$home" node --input-type=module 2>&1 <<'EOF'
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
+  out=$(PLUGIN="$ext" FM_HOME="$home" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'EOF'
 import { pathToFileURL } from "node:url";
 
 const handlers = new Map();

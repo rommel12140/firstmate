@@ -3,7 +3,7 @@ name: firstmate-coding-guidelines
 description: >-
   Agent-only reference for changing firstmate's shared, tracked material per AGENTS.md section 1.
   Use before editing any of that material, whether working as firstmate directly or as a crewmate briefed on a firstmate-repo task.
-  Covers the knowledge-placement decision tree, the one-owner rule for contracts, the inline-stub pattern for content moved into a skill, AGENTS.md size discipline, trigger hygiene for new skills, and repo style rules (one sentence per line, plain dash, no agent co-author, shellcheck-clean bin scripts, colocated tests, and maintainer-verification evidence).
+  Covers the knowledge-placement decision tree, the one-owner rule for contracts, the inline-stub pattern for content moved into a skill, AGENTS.md size discipline, trigger hygiene for new skills, and repo style rules (one sentence per line, plain dash, no agent co-author, shellcheck-clean bin scripts, stock macOS Bash 3.2 as a supported runtime target, colocated tests, and maintainer-verification evidence).
 user-invocable: false
 metadata:
   internal: true
@@ -119,6 +119,9 @@ Run `bin/fm-doc-audience-check.sh`; it enforces classification, README setup rou
 - Never add an agent name as a commit co-author.
 - `bin/*.sh` and `bin/backends/*.sh` must pass `shellcheck`.
 - Run `bin/fm-lint.sh` before treating a script change as done; it is the single owner of the lint definition (file set, config, and pinned shellcheck version) that CI and the no-mistakes pre-push gate both invoke, and it refuses to run under any other shellcheck version.
+- Stock macOS Bash 3.2 (`/bin/bash`, 3.2.57) is a supported runtime target for those scripts, not only a parse target: they must behave correctly under it, not merely parse.
+- CI's `Stock macOS Bash snapshot compatibility` lane in [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) covers the parse half plus two snapshot tests, so every other 3.2 runtime difference is held by review alone and has to be reasoned about when you write the code.
+- Three 3.2-only runtime defects are already fixed in-tree and carry the explanation in a comment at the fix site; read those before writing new `set -e`/`set -u` logic: `set -e` not honored for a failed redirection on a brace group ([`bin/fm-spawn.sh`](../../../bin/fm-spawn.sh)), `.` of a missing file aborting the script even under `|| return 1` ([`bin/fm-backend.sh`](../../../bin/fm-backend.sh)), and an empty array expansion treated as unbound under `set -u` ([`bin/fm-remote-home-seed.sh`](../../../bin/fm-remote-home-seed.sh)).
 - Colocate tests with the existing pattern in `tests/`, name them `<subject>.test.sh`, and extend an existing script rather than inventing a new runner.
 - Tests must exercise behavior through an executable or public interface and must never assert implementation-source bytes, including through parsers, regexes, snapshots, or indirect wrappers.
 - A maintainer-verification record under `docs/verification/` records active empirical facts, not assumptions or task chronology.

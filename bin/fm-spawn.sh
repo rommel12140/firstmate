@@ -76,7 +76,9 @@
 #   focus-sensitive presentation mutation.
 #   Every single-task invocation holds one task-id-scoped lock across backend
 #   creation through metadata publication, so concurrent same-id spawns serialize
-#   even when they select different backends.
+#   even when they select different backends. That publication is fail-closed: a
+#   spawn that cannot write the task's state/<id>.meta record exits non-zero with
+#   an error instead of reporting a task no supervision record can ever find.
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
 #   spawns require an explicit harness so firstmate cannot silently skip dispatch
@@ -2032,6 +2034,17 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+# Stock macOS bash 3.2 does not honor set -e for a failed redirection on a brace
+# group, so the file is opened by a simple command first, where `||` catches the
+# failure. Guarding the group itself instead would make it a `||` operand, which
+# suppresses set -e for every write inside it and reports only the trailing
+# `if`'s status: a spawn would then continue on a truncated metadata file.
+# Either way, continuing here would report a spawned task no supervision record
+# can ever find.
+: > "$STATE/$ID.meta" || {
+  echo "error: could not publish task metadata to $STATE/$ID.meta" >&2
+  exit 1
+}
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
@@ -2073,7 +2086,7 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta"
+} >> "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
