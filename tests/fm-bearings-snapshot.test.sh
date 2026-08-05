@@ -30,6 +30,16 @@ SH
 #!/usr/bin/env bash
 case "${1:-}" in
   display-message) case "$*" in *dead-*) exit 1 ;; *) printf '%%1\n' ;; esac ;;
+  list-windows)
+    # Endpoint presence comes from the window inventory, never from a
+    # display-message exit code: real tmux answers an absent target from the
+    # current client's own window and still exits 0. Every window this home
+    # recorded is present except the ones this fixture names dead.
+    for meta in "${FM_HOME:-/nonexistent}"/state/*.meta; do
+      [ -f "$meta" ] || continue
+      grep '^window=' "$meta" | cut -d= -f2- | grep -v -- '-dead-\|:dead-'
+    done
+    ;;
   capture-pane)
     case "$*" in
       *fm-domain-alpha*) printf 'stale terminal summary: Phase 7 started\n> \n' ;;
