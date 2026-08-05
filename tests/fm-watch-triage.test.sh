@@ -5,8 +5,8 @@
 # wake, so firstmate's LLM re-arms once per actionable event instead of once per
 # wake. These tests cover the classifier predicates as pure functions, then drive
 # a real fm-watch.sh subprocess to assert the behavioral contract:
-# provably-working no-verb wakes absorbed (no exit, no queue entry, suppressor
-# advanced, beacon fresh), stopped-crew no-verb wakes surfaced (queue + exit),
+# provably-working and declared-pause no-verb wakes absorbed (no exit, no queue
+# entry, suppressor advanced, beacon fresh), stopped-crew no-verb wakes surfaced (queue + exit),
 # provably-working stale panes absorbed-then-escalated past the threshold,
 # terminal-looking stale status lines overridden by an active run, the heartbeat
 # backstop fail-safe, and afk coherence (no double-triage while the away-mode
@@ -308,30 +308,38 @@ test_crew_absorb_class_classifier() {
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
 }
 
-# signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
-# task it references is provably working; if any crew has stopped, or no task can be
-# resolved, it surfaces. Files map to ids by stripping .status / .turn-ended.
-test_signal_crew_provably_working_classifier() {
+# signal_crew_working_or_paused: a no-verb "signal:" wake is benign ONLY when EVERY
+# task it references is provably working or in a declared external-wait pause; if
+# any crew is neither (stopped, done, unknown), or no task can be resolved, it
+# surfaces. Files map to ids by stripping .status / .turn-ended. The paused arm is
+# what keeps a declared wait's own short recheck turns (harness-written turn-ends
+# every few minutes) from waking a supervisor each time.
+test_signal_crew_working_or_paused_classifier() {
   local dir fakebin state
-  dir=$(make_case signal-provably-working); fakebin="$dir/fakebin"; state="$dir/state"
+  dir=$(make_case signal-working-or-paused); fakebin="$dir/fakebin"; state="$dir/state"
   export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
   export FM_FAKE_CREW_STATE_a='state: working · source: run-step · running'
   export FM_FAKE_CREW_STATE_b='state: done · source: run-step · run passed'
-  signal_crew_provably_working "$state/a.status" "$state/a.turn-ended" \
+  export FM_FAKE_CREW_STATE_c='state: paused · source: status-log · waiting out CI runners'
+  signal_crew_working_or_paused "$state/a.status" "$state/a.turn-ended" \
     || fail "a single provably-working crew (status+turn-end) was not benign"
-  ! signal_crew_provably_working "$state/a.status" "$state/b.turn-ended" \
+  signal_crew_working_or_paused "$state/c.turn-ended" \
+    || fail "a declared-pause crew's bare turn-end was not benign"
+  signal_crew_working_or_paused "$state/a.status" "$state/c.turn-ended" \
+    || fail "a coalesced working+paused batch was not benign"
+  ! signal_crew_working_or_paused "$state/a.status" "$state/b.turn-ended" \
     || fail "a coalesced batch including a stopped crew was treated as benign"
-  ! signal_crew_provably_working "$state/b.turn-ended" \
+  ! signal_crew_working_or_paused "$state/b.turn-ended" \
     || fail "a stopped crew's bare turn-end was treated as benign"
-  ! signal_crew_provably_working "$state/a.meta" \
+  ! signal_crew_working_or_paused "$state/a.meta" \
     || fail "a non-signal file resolved to a benign verdict"
-  ! signal_crew_provably_working \
+  ! signal_crew_working_or_paused \
     || fail "an empty signal file list was treated as benign"
-  unset FM_FAKE_CREW_STATE_a FM_FAKE_CREW_STATE_b
-  pass "signal_crew_provably_working: benign only when every referenced crew is provably working"
+  unset FM_FAKE_CREW_STATE_a FM_FAKE_CREW_STATE_b FM_FAKE_CREW_STATE_c
+  pass "signal_crew_working_or_paused: benign only when every referenced crew is working or paused"
 }
 
-# --- benign wakes are absorbed ONLY when the crew is provably working ---------
+# --- benign wakes are absorbed ONLY when the crew is provably working or paused ---
 
 test_provably_working_signal_absorbed() {
   local dir state fakebin out status_file pid
@@ -371,6 +379,30 @@ test_turn_ended_provably_working_absorbed() {
   [ ! -s "$state/.wake-queue" ] || fail "provably-working turn-end enqueued a durable wake record"
   reap "$pid"
   pass "a bare turn-end whose crew is provably working (busy pane) is absorbed"
+}
+
+# The second false-alarm source from 2026-08-05: a crew inside a declared
+# external-wait pause still completes short recheck turns, and the HARNESS (not
+# the worker) touches turn-ended on each, so a supervision turn was spent every
+# few minutes on a wait the worker had already declared. A paused authoritative
+# verdict now absorbs those turn-ends; a real finish or gate still surfaces
+# because it appends a captain-relevant verb, and a run outcome overrides the
+# pause inside fm-crew-state.sh before this classification ever sees it.
+test_turn_ended_paused_absorbed() {
+  local dir state fakebin out pid
+  dir=$(make_case turn-ended-paused); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  : > "$state/task.turn-ended"
+  printf 'paused: waiting out CI runners\n' > "$state/task.status"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting out CI runners'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "watcher exited for a turn-end whose crew declared a pause (should absorb): $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "declared-pause turn-end printed a wake reason: $(cat "$out")"
+  [ ! -s "$state/.wake-queue" ] || fail "declared-pause turn-end enqueued a durable wake record"
+  reap "$pid"
+  pass "a bare turn-end whose crew is in a declared pause is absorbed"
 }
 
 # --- a no-verb signal whose crew is NOT provably working SURFACES -------------
@@ -1806,9 +1838,10 @@ test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
-test_signal_crew_provably_working_classifier
+test_signal_crew_working_or_paused_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
+test_turn_ended_paused_absorbed
 test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_actionable_signal_surfaced
