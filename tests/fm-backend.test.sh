@@ -703,8 +703,14 @@ strip_send_preflight() {  # <log>
   local preflight inventory
   preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
   inventory=$'tmux\x1flist-windows\x1f-a\x1f-F\x1f#{session_name}:#{window_name}'
-  awk -v preflight="$preflight" -v inventory="$inventory" \
-    '$0 != preflight && $0 != inventory { print }' "$1"
+  # The current verification also asks tmux which endpoint it resolved the
+  # target to, which is one display-message carrying several identity fields.
+  awk -v preflight="$preflight" -v inventory="$inventory" '
+    $0 == preflight { next }
+    $0 == inventory { next }
+    index($0, "#{pane_id}") && index($0, "#{window_id}") { next }
+    { print }
+  ' "$1"
 }
 
 test_send_conformance_old_vs_new() {

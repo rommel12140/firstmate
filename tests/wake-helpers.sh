@@ -122,11 +122,27 @@ case "${1:-}" in
   display-message)
     [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = "1" ] || exit 1
     _print=0
+    _target=""
+    _prev=""
+    _ids=0
     # Return cursor_y when the format asks for it (pane_input_pending).
     for _a in "$@"; do
       case "$_a" in *cursor_y*) printf '%s\n' "${FM_FAKE_TMUX_CURSOR_Y:-0}"; exit 0 ;; esac
+      [ "$_prev" = "-t" ] && _target=$_a
       [ "$_a" = "-p" ] && _print=1
+      # The endpoint-presence read asks for several identity fields at once and
+      # requires one of them to equal the target it asked about, because real
+      # tmux resolves an absent target to another window and still exits 0.
+      # FM_FAKE_TMUX_PANE_ALIVE already decided this pane exists, so answer as
+      # the requested endpoint rather than some other one.
+      case "$_a" in *"#{pane_id}"*"#{window_id}"*) _ids=1 ;; esac
+      _prev=$_a
     done
+    if [ "$_ids" = 1 ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_target" "$_target" "$_target" "$_target" "$_target" "$_target"
+      exit 0
+    fi
     [ "$_print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   list-windows)
@@ -214,6 +230,18 @@ case "${1:-}" in
   display-message)
     print=0
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
+    # Answer the endpoint-presence identity read as the requested endpoint, for
+    # the reason spelled out in make_supercase's tmux fake above.
+    target=""; prev=""
+    for a in "$@"; do
+      [ "$prev" = "-t" ] && target=$a
+      prev=$a
+      case "$a" in *"#{pane_id}"*"#{window_id}"*)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$target" "$target" "$target" "$target" "$target" "$target"
+        exit 0 ;;
+      esac
+    done
     for a in "$@"; do [ "$a" = "-p" ] && print=1; done
     [ "$print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;

@@ -290,6 +290,32 @@ fm_backend_target_exists tmux "no-such-window" \
   && fail "the legacy bare window-name form must not read an absent window as present"
 pass "tmux presence: the legacy bare window-name form resolves present and absent correctly"
 
+# The id and index target forms firstmate itself uses: the away-mode daemon
+# takes its supervisor pane from $TMUX_PANE (a `%pane-id`) and otherwise falls
+# back to the `firstmate:0` session:index default. A presence rule that only
+# understood session:name would report both of those absent.
+live_pane=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:idle" '#{pane_id}')
+live_window=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:idle" '#{window_id}')
+live_index=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:idle" '#{window_index}')
+[ -n "$live_pane" ] && [ -n "$live_window" ] && [ -n "$live_index" ] \
+  || fail "could not read the live window's own ids, so the id-form cases would prove nothing"
+
+fm_backend_target_exists tmux "$live_pane" \
+  || fail "a live pane id ($live_pane) must read present"
+fm_backend_target_exists tmux "$live_window" \
+  || fail "a live window id ($live_window) must read present"
+fm_backend_target_exists tmux "$SESSION:$live_index" \
+  || fail "a live session:index target must read present"
+pass "tmux presence: live pane-id, window-id, and session:index targets read present"
+
+fm_backend_target_exists tmux "%99999" \
+  && fail "an absent pane id must read absent, not inherit the client's own pane"
+fm_backend_target_exists tmux "@99999" \
+  && fail "an absent window id must read absent"
+fm_backend_target_exists tmux "no-such-session:0" \
+  && fail "a session:index target in a nonexistent session must read absent"
+pass "tmux presence: absent pane-id, window-id, and session:index targets read absent"
+
 # A ghost target that is a strict prefix of a live window name. tmux target
 # selectors match by pattern and substring, so a selector-based probe reports
 # this absent task as present.

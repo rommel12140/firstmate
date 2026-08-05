@@ -224,35 +224,57 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
       done
 }
 
-# fm_backend_tmux_target_exists: does <target> name a tmux window that really
+# fm_backend_tmux_target_exists: does <target> name a tmux endpoint that really
 # exists? The cheap presence half of the liveness contract owned by
 # bin/fm-backend.sh's fm_backend_target_exists.
 #
-# It never asks `display-message -t <target>`. That command resolves an absent
-# target to the current client's own window and still exits 0 - the same trap
-# bin/fm-spawn.sh's treehouse-get wait documents ("the window id never lies") -
-# so an exit-code read of it reports every target alive, including a window
-# that exists nowhere and a session that no longer exists at all.
+# The exit code of `display-message -t <target>` answers nothing. tmux resolves
+# an absent target to the current client's own window and still exits 0 - the
+# same trap bin/fm-spawn.sh's treehouse-get wait documents ("the window id
+# never lies") - so reading that exit code reports every target alive,
+# including a window that exists nowhere and a session that no longer exists.
 #
-# The recorded name must instead appear literally in a successful window
-# inventory, which is the same evidence fm_backend_tmux_agent_state requires,
-# so the cheap presence read and the recovery-grade classifier can never
-# disagree about whether the endpoint is there.
+# What the command reports is still usable, because tmux names what it actually
+# resolved to. So ask for the resolved endpoint's identities and require one to
+# equal the target that was asked for. That contains the fallback (an absent
+# target resolves to some OTHER endpoint, whose identity cannot equal the one
+# requested) without reimplementing tmux's selector rules, so every target form
+# firstmate uses keeps working: a `%pane-id` from `$TMUX_PANE`, a `@window-id`,
+# the `session:index` supervisor-pane default, `session:name`, and a bare name.
 #
-# The inventory is matched as text rather than through a tmux target selector,
-# because selector matching is not exact in either direction: a plain selector
-# resolves a ghost `sess:fm-a` onto a live `sess:fm-abc` by substring, and the
-# `=name` exact form false-negatives on a live window whose name is
-# digit-shaped, which tmux reads as an index instead. Both cases are recorded
-# in docs/verification/runtime-backends.md. The second is the dangerous one: a
-# false absence is what licenses relaunching onto live work.
+# A target that does not match falls through to a literal window inventory,
+# which is the same evidence fm_backend_tmux_agent_state requires. That second
+# read exists because tmux selectors are not exact: `=name` reads a
+# digit-shaped window name as an index and reports a LIVE window absent, and a
+# false absence is what licenses relaunching onto live work. Neither read can
+# invent presence - one compares resolved identity, the other compares recorded
+# text - so consulting both only ever recovers a true endpoint.
 #
-# A failed inventory means the server or session is gone, which IS "does not
-# exist" for this read - the boolean contract fm_backend_target_exists already
+# A failed read means the server or session is gone, which IS "does not exist"
+# for this purpose - the boolean contract fm_backend_target_exists already
 # applies to every other backend.
 fm_backend_tmux_target_exists() {  # <target>
-  local target=$1 inventory line
+  local target=$1 resolved inventory line candidate
+  local pane_id window_id sess_index sess_name window_index window_name
   [ -n "$target" ] || return 1
+
+  # Tab-separated so a window name containing the separator is the only way to
+  # confuse this, which no firstmate-generated name does.
+  resolved=$(tmux display-message -p -t "$target" \
+    '#{pane_id}	#{window_id}	#{session_name}:#{window_index}	#{session_name}:#{window_name}	#{window_index}	#{window_name}' \
+    2>/dev/null) || resolved=''
+  IFS=$'\t' read -r pane_id window_id sess_index sess_name window_index window_name <<EOF
+$resolved
+EOF
+  # An empty pane id means the command resolved nothing at all (a session that
+  # is gone answers with empty fields), so the composed fields below would be
+  # punctuation rather than an identity.
+  if [ -n "$pane_id" ]; then
+    for candidate in "$pane_id" "$window_id" "$sess_index" "$sess_name" "$window_index" "$window_name"; do
+      [ -n "$candidate" ] && [ "$candidate" = "$target" ] && return 0
+    done
+  fi
+
   inventory=$(tmux list-windows -a -F '#{session_name}:#{window_name}' 2>/dev/null) || return 1
   case "$target" in
     *:*)
