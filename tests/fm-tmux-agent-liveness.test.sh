@@ -316,6 +316,42 @@ fm_backend_target_exists tmux "no-such-session:0" \
   && fail "a session:index target in a nonexistent session must read absent"
 pass "tmux presence: absent pane-id, window-id, and session:index targets read absent"
 
+# The pane-qualified `session:window.pane` forms. firstmate never composes one,
+# but docs/configuration.md documents FM_SUPERVISOR_TARGET as an unrestricted
+# tmux target, and a false absent is the dangerous direction here:
+# fm-supervise-daemon.sh hard-exits at startup on it and fm-send.sh refuses the
+# target outright.
+new_window presence-pane "$SLEEP_BIN" 900
+"$REAL_TMUX" -L "$SOCKET" split-window -d -t "$SESSION:presence-pane" -c "$LAB/wt" -- "$SLEEP_BIN" 900 \
+  || fail "could not split the pane-qualified presence window"
+pane_index=$("$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:presence-pane" -F '#{pane_index}' | tail -1)
+pane_window_index=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:presence-pane" '#{window_index}')
+[ -n "$pane_index" ] && [ "$pane_index" != 0 ] && [ -n "$pane_window_index" ] \
+  || fail "the split pane never appeared, so the pane-qualified cases would prove nothing"
+
+# The same anti-vacuous guard the cases above carry: tmux must still answer an
+# absent pane-qualified target from some OTHER pane, or these assertions stop
+# covering the fallback they exist for.
+raw_pane_readback=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:presence-pane.99" \
+  '#{session_name}:#{window_name}.#{pane_index}' 2>/dev/null) \
+  || fail "display-message failed for an absent pane-qualified target, so the fallback is not live in this tmux"
+[ "$raw_pane_readback" != "$SESSION:presence-pane.99" ] \
+  || fail "display-message did not fall back for an absent pane (read back '$raw_pane_readback')"
+
+fm_backend_target_exists tmux "$SESSION:presence-pane.$pane_index" \
+  || fail "a live session:name.pane target must read present"
+fm_backend_target_exists tmux "$SESSION:$pane_window_index.$pane_index" \
+  || fail "a live session:index.pane target must read present"
+pass "tmux presence: live session:name.pane and session:index.pane targets read present"
+
+fm_backend_target_exists tmux "$SESSION:presence-pane.99" \
+  && fail "an absent pane in a live window must read absent, not inherit the window's live pane"
+fm_backend_target_exists tmux "$SESSION:no-such-window.0" \
+  && fail "a pane-qualified target naming an absent window must read absent"
+fm_backend_target_exists tmux "no-such-session:0.0" \
+  && fail "a pane-qualified target in a nonexistent session must read absent"
+pass "tmux presence: absent pane-qualified targets read absent"
+
 # A ghost target that is a strict prefix of a live window name. tmux target
 # selectors match by pattern and substring, so a selector-based probe reports
 # this absent task as present.

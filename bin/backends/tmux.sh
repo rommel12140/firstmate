@@ -43,6 +43,13 @@ fm_backend_tmux_capture() {  # <target> <lines>
 # fm_backend_tmux_send_key: one named key. Mirrors fm-send.sh's --key path:
 # `tmux display-message -p -t "$T" '#{pane_id}' >/dev/null`, then
 # `tmux send-keys -t "$T" "$2"`.
+#
+# That leading display-message is the exit-code probe fm_backend_tmux_target_exists
+# documents as verifying nothing, and it verifies nothing here either: it is kept
+# only so this extraction stays byte-identical to the sequence fm-send.sh ran
+# inline. Presence is not its job - send-keys resolves its own target with no
+# active-window fallback and fails on an absent one, so the send below is what
+# actually refuses a dead endpoint.
 fm_backend_tmux_send_key() {  # <target> <key>
   tmux display-message -p -t "$1" '#{pane_id}' >/dev/null
   tmux send-keys -t "$1" "$2"
@@ -241,6 +248,11 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # requested) without reimplementing tmux's selector rules, so every target form
 # firstmate uses keeps working: a `%pane-id` from `$TMUX_PANE`, a `@window-id`,
 # the `session:index` supervisor-pane default, `session:name`, and a bare name.
+# The pane-qualified `session:index.pane` and `session:name.pane` forms are
+# carried too: firstmate never composes one itself, but docs/configuration.md
+# documents FM_SUPERVISOR_TARGET as an unrestricted tmux target, and a target
+# form this list omits reads absent - which bin/fm-supervise-daemon.sh turns
+# into a hard startup exit and bin/fm-send.sh into a refusal.
 #
 # A target that does not match falls through to a literal window inventory,
 # which is the same evidence fm_backend_tmux_agent_state requires. That second
@@ -248,7 +260,10 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # digit-shaped window name as an index and reports a LIVE window absent, and a
 # false absence is what licenses relaunching onto live work. Neither read can
 # invent presence - one compares resolved identity, the other compares recorded
-# text - so consulting both only ever recovers a true endpoint.
+# text - so consulting both only ever recovers a true endpoint. The inventory
+# is window-granular, so a pane-qualified target is answered by the identity
+# read alone; tmux splits such a target at its LAST dot, so the window half is
+# still matched by name and never mis-read as an index.
 #
 # A failed read means the server or session is gone, which IS "does not exist"
 # for this purpose - the boolean contract fm_backend_target_exists already
@@ -256,21 +271,24 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 fm_backend_tmux_target_exists() {  # <target>
   local target=$1 resolved inventory line candidate
   local pane_id window_id sess_index sess_name window_index window_name
+  local sess_index_pane sess_name_pane
   [ -n "$target" ] || return 1
 
   # Tab-separated so a window name containing the separator is the only way to
   # confuse this, which no firstmate-generated name does.
   resolved=$(tmux display-message -p -t "$target" \
-    '#{pane_id}	#{window_id}	#{session_name}:#{window_index}	#{session_name}:#{window_name}	#{window_index}	#{window_name}' \
+    '#{pane_id}	#{window_id}	#{session_name}:#{window_index}	#{session_name}:#{window_name}	#{window_index}	#{window_name}	#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}' \
     2>/dev/null) || resolved=''
-  IFS=$'\t' read -r pane_id window_id sess_index sess_name window_index window_name <<EOF
+  IFS=$'\t' read -r pane_id window_id sess_index sess_name window_index window_name \
+    sess_index_pane sess_name_pane <<EOF
 $resolved
 EOF
   # An empty pane id means the command resolved nothing at all (a session that
   # is gone answers with empty fields), so the composed fields below would be
   # punctuation rather than an identity.
   if [ -n "$pane_id" ]; then
-    for candidate in "$pane_id" "$window_id" "$sess_index" "$sess_name" "$window_index" "$window_name"; do
+    for candidate in "$pane_id" "$window_id" "$sess_index" "$sess_name" "$window_index" "$window_name" \
+      "$sess_index_pane" "$sess_name_pane"; do
       [ -n "$candidate" ] && [ "$candidate" = "$target" ] && return 0
     done
   fi

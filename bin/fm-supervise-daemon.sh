@@ -1395,9 +1395,11 @@ fm_super_main() {
 
   # --- validate supervisor target at startup (a missing target is a typo) ---
   # Dispatches through bin/fm-backend.sh instead of a raw `tmux display-message`
-  # probe, so a herdr supervisor pane is checked via the herdr adapter; for
-  # backend=tmux this runs the exact same `tmux display-message -p -t "$TARGET"
-  # '#{pane_id}'` call as before.
+  # probe, so a herdr supervisor pane is checked via the herdr adapter; the
+  # backend=tmux arm compares the endpoint tmux actually resolved the target to
+  # against the target itself, then falls back to a literal window inventory.
+  # It deliberately is NOT the old `display-message -t "$TARGET"` exit code,
+  # which answers from the client's own window and so passed every target.
   if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
     echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
     log "startup failed: target '$TARGET' not found (backend=$BACKEND)"

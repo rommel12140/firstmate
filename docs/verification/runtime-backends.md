@@ -159,7 +159,27 @@ sess:2.1.221         (exit 0)
 
 `display-message` answered an absent target from the attached client's own active window and still exited 0, so an exit-code read of it can never report an absent endpoint.
 Its reported value stays usable, because tmux names the endpoint it actually resolved to, and an absent target resolves to some other endpoint whose identity cannot equal the one requested.
-That is why the presence read asks for the resolved pane id, window id, `session:index`, `session:name`, index, and name, and requires one to equal the target: it covers every target form firstmate uses, including the `%pane-id` the away-mode daemon takes from `$TMUX_PANE` and its `firstmate:0` `session:index` default, without reimplementing tmux's selector rules.
+That is why the presence read asks for the resolved pane id, window id, `session:index`, `session:name`, index, name, `session:index.pane`, and `session:name.pane`, and requires one to equal the target: it covers every target form firstmate uses, including the `%pane-id` the away-mode daemon takes from `$TMUX_PANE` and its `firstmate:0` `session:index` default, without reimplementing tmux's selector rules.
+
+The two pane-qualified forms are carried because `FM_SUPERVISOR_TARGET` is documented as an unrestricted tmux target, and a target form the identity list omits reads absent, which `bin/fm-supervise-daemon.sh` turns into a hard startup exit.
+The same fallback was measured for them on 2026-08-05 with the same tmux build, on a private socket holding one window `win` with two panes and no attached client.
+
+```sh
+tmux -L fmevid display-message -p -t sess:win.1 '#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}'
+tmux -L fmevid display-message -p -t sess:win.9 '#{session_name}:#{window_name}.#{pane_index}'
+tmux -L fmevid display-message -p -t sess:nope.0 '#{session_name}:#{window_name}.#{pane_index}'
+```
+
+Observed output and exit codes, one line per command above:
+
+```text
+sess:0.1	sess:win.1   (exit 0)
+sess:win.1           (exit 0)
+sess:win.1           (exit 0)
+```
+
+An absent pane and an absent window both answered from the active pane and still exited 0, and both reported an identity that differs from the target asked for, so the same comparison that contains the window-form fallback contains this one.
+tmux splits a pane-qualified target at its last dot, so the window half is matched by name and is not re-read as an index; the window inventory stays window-granular and these forms are answered by the identity read alone.
 
 Selector matching cannot replace that check in either direction.
 The `=name` exact-match form rejected the absent `fm-ghost`, but it also rejected the live `2.1.221`, because tmux reads a digit-shaped window name as an index rather than a name.
