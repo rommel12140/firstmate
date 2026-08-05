@@ -2032,6 +2032,17 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+# Stock macOS bash 3.2 does not honor set -e for a failed redirection on a brace
+# group, so the file is opened by a simple command first, where `||` catches the
+# failure. Guarding the group itself instead would make it a `||` operand, which
+# suppresses set -e for every write inside it and reports only the trailing
+# `if`'s status: a spawn would then continue on a truncated metadata file.
+# Either way, continuing here would report a spawned task no supervision record
+# can ever find.
+: > "$STATE/$ID.meta" || {
+  echo "error: could not publish task metadata to $STATE/$ID.meta" >&2
+  exit 1
+}
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
@@ -2073,13 +2084,7 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta" || {
-  # Stock macOS bash 3.2 does not honor set -e for a failed redirection on a
-  # brace group, so metadata publication must abort explicitly: continuing here
-  # would report a spawned task no supervision record can ever find.
-  echo "error: could not publish task metadata to $STATE/$ID.meta" >&2
-  exit 1
-}
+} >> "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
