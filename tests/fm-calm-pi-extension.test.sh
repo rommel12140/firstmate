@@ -101,11 +101,13 @@ test_home_resolution() {
   ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
 
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
   out=$(cd "$fixture/launch-cwd" && \
     EXT="$fixture/project/.pi/extensions/fm-calm.ts" \
     OVERRIDE_HOME="$fixture/override" \
     EXTENSION_HOME="$fixture/project" \
-    node --input-type=module 2>&1 <<'JS'
+    NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -219,10 +221,12 @@ test_pi_compat_degraded_adapter() {
   ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/project/node_modules/typebox"
   printf '%s\n' '{"type":"module"}' >"$fixture/project/package.json"
 
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
   out=$(cd "$fixture/project" && \
     EXT="$fixture/project/.pi/extensions/fm-calm.ts" \
     PI_PACKAGE_DIR="$PI_PACKAGE_DIR" \
-    node --input-type=module 2>&1 <<'JS'
+    NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";
 
 const packageRoot = process.env.PI_PACKAGE_DIR;
@@ -322,7 +326,9 @@ test_pi_compat_missing_adapter_exports() {
     'export class UserMessageComponent {}' \
     >"$fixture/project/node_modules/@earendil-works/pi-coding-agent/index.js"
 
-  out=$(cd "$fixture/project" && node --input-type=module 2>&1 <<'JS'
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
+  out=$(cd "$fixture/project" && NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 const assistant = await import("./.pi/extensions/lib/fm-calm-assistant-layout.ts");
 const operational = await import("./.pi/extensions/lib/fm-calm-operational-user-layout.ts");
 
@@ -383,7 +389,9 @@ exec "$FM_OPERATIONAL_INPUT_OWNER" "$@"
 SH
   chmod +x "$fixture/operational-input-probe.sh"
 
-  out=$(cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module 2>&1 <<'JS'
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
+  out=$(cd "$fixture" && EXT="$fixture/fm-calm.ts" WATCH_EXT="$fixture/fm-primary-pi-watch.ts" FM_HOME="$fixture/home" FM_OPERATIONAL_INPUT_SCRIPT="$fixture/operational-input-probe.sh" FM_OPERATIONAL_INPUT_OWNER="$OPERATIONAL_INPUT" FM_OPERATIONAL_INPUT_CALLS="$fixture/operational-input-calls" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -1627,7 +1635,9 @@ test_working_ship_geometry_and_lifecycle() {
   ln -s "$PI_PACKAGE_DIR/node_modules/typebox" "$fixture/node_modules/typebox"
   printf '%s\n' '{"type":"module"}' >"$fixture/package.json"
 
-  out=$(cd "$fixture" && EXT="$fixture/fm-calm.ts" FM_HOME="$fixture/home" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" node --input-type=module 2>&1 <<'JS'
+  # Runtime type-stripping warnings are host noise; this assertion owns
+  # extension output only.
+  out=$(cd "$fixture" && EXT="$fixture/fm-calm.ts" FM_HOME="$fixture/home" PI_PACKAGE_DIR="$PI_PACKAGE_DIR" NODE_NO_WARNINGS=1 node --input-type=module 2>&1 <<'JS'
 import { pathToFileURL } from "node:url";
 
 const packageRoot = process.env.PI_PACKAGE_DIR;

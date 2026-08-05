@@ -2073,7 +2073,13 @@ META_WINDOW=$T
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-} > "$STATE/$ID.meta"
+} > "$STATE/$ID.meta" || {
+  # Stock macOS bash 3.2 does not honor set -e for a failed redirection on a
+  # brace group, so metadata publication must abort explicitly: continuing here
+  # would report a spawned task no supervision record can ever find.
+  echo "error: could not publish task metadata to $STATE/$ID.meta" >&2
+  exit 1
+}
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")

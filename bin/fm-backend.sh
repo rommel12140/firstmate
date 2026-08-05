@@ -595,9 +595,14 @@ fm_backend_expected_label_of_selector() {  # <raw-target> <state-dir>
 fm_backend_source() {  # <name>
   local name=$1
   fm_backend_validate "$name" || return 1
+  # The [ -r ] probe before each source is load-bearing: stock macOS bash 3.2
+  # treats `.` of a missing file as a fatal script abort even inside
+  # `|| return 1`, so an absent adapter must be detected before sourcing for
+  # callers to get their catchable failure instead of a raw shell death.
   case "$name" in
     tmux)
       if [ -z "${_FM_BACKEND_TMUX_SOURCED:-}" ]; then
+        [ -r "$FM_BACKEND_LIB_DIR/backends/tmux.sh" ] || return 1
         # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/tmux.sh" || return 1
         _FM_BACKEND_TMUX_SOURCED=1
@@ -605,6 +610,7 @@ fm_backend_source() {  # <name>
       ;;
     herdr)
       if [ -z "${_FM_BACKEND_HERDR_SOURCED:-}" ]; then
+        [ -r "$FM_BACKEND_LIB_DIR/backends/herdr.sh" ] || return 1
         # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/herdr.sh" || return 1
         _FM_BACKEND_HERDR_SOURCED=1
@@ -612,6 +618,7 @@ fm_backend_source() {  # <name>
       ;;
     zellij)
       if [ -z "${_FM_BACKEND_ZELLIJ_SOURCED:-}" ]; then
+        [ -r "$FM_BACKEND_LIB_DIR/backends/zellij.sh" ] || return 1
         # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/zellij.sh" || return 1
         _FM_BACKEND_ZELLIJ_SOURCED=1
@@ -619,6 +626,7 @@ fm_backend_source() {  # <name>
       ;;
     orca)
       if [ -z "${_FM_BACKEND_ORCA_SOURCED:-}" ]; then
+        [ -r "$FM_BACKEND_LIB_DIR/backends/orca.sh" ] || return 1
         # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/orca.sh" || return 1
         _FM_BACKEND_ORCA_SOURCED=1
@@ -626,6 +634,7 @@ fm_backend_source() {  # <name>
       ;;
     cmux)
       if [ -z "${_FM_BACKEND_CMUX_SOURCED:-}" ]; then
+        [ -r "$FM_BACKEND_LIB_DIR/backends/cmux.sh" ] || return 1
         # shellcheck source=/dev/null
         . "$FM_BACKEND_LIB_DIR/backends/cmux.sh" || return 1
         _FM_BACKEND_CMUX_SOURCED=1
