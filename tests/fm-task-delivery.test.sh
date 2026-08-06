@@ -25,6 +25,9 @@ TMP_ROOT=$(fm_test_tmproot fm-task-delivery)
 # A home with one registered project, one project directory, and a fake tmux that
 # refuses, so a spawn that clears the delivery checks still creates nothing.
 # Echoes "<home>|<project-dir>|<fakebin>".
+# The project directory is a real git repo with a real origin, because a push-mode
+# spawn now re-reads that origin to confirm the brief's recorded landing place.
+LAND_FIXTURE=fixture-owner/fixture-repo
 make_home() {  # <name> [<registry-line>...]
   local name=$1 home projects fakebin
   shift
@@ -34,18 +37,32 @@ make_home() {  # <name> [<registry-line>...]
   mkdir -p "$home/data" "$home/state" "$home/config" "$projects/proj" "$fakebin"
   printf '#!/bin/sh\nexit 1\n' > "$fakebin/tmux"
   chmod +x "$fakebin/tmux"
+  git -C "$projects/proj" init -q
+  git -C "$projects/proj" remote add origin "https://github.com/$LAND_FIXTURE.git"
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$home/data/projects.md"
   fi
   printf '%s\n' "$home|$projects/proj|$fakebin"
 }
 
-write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
+# A push mode records its verified landing place on the same contract line; a
+# local-only brief has no push and records none. Pass <land> to override it.
+write_brief() {  # <home> <id> [<recorded-mode>] [<recorded-land>]
+  local home=$1 id=$2 mode=${3:-} land=${4:-}
   mkdir -p "$home/data/$id"
+  if [ -z "$land" ]; then
+    case "$mode" in
+      no-mistakes|direct-PR) land=$LAND_FIXTURE ;;
+    esac
+  fi
+  [ "$land" != none ] || land=
   {
     printf 'You are a crewmate.\n\n# Definition of done\n'
-    [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
+    if [ -n "$mode" ]; then
+      printf 'Delivery contract: mode=%s' "$mode"
+      [ -z "$land" ] || printf ' land=%s' "$land"
+      printf '\n'
+    fi
   } > "$home/data/$id/brief.md"
 }
 
@@ -144,6 +161,135 @@ EOF
   assert_contains "$out" "records no delivery contract line" "a legacy brief did not warn about its missing contract"
   assert_not_contains "$out" "delivery mismatch" "a legacy brief was treated as a mismatch"
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
+}
+
+# The brief's landing place is a pre-answered fact, so the spawn re-reads the clone
+# it is about to hand the worker instead of trusting the record. A missing value, or
+# one the repository already contradicts, must stop before any endpoint exists: that
+# is the intake stop replacing the mid-run one, where a finished worker parked to ask
+# where to push because the recorded target was not the one it could push to.
+test_push_mode_spawn_verifies_the_recorded_landing_place() {
+  local rec home proj fakebin out status mode
+  rec=$(make_home landing)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+
+  for mode in no-mistakes direct-PR; do
+    write_brief "$home" "landing-missing-$mode" "$mode" none
+    out=$(run_spawn "$home" "$fakebin" "landing-missing-$mode" "$proj" claude --mode "$mode" --yolo off)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$mode: a brief with no landing place should exit non-zero"
+    assert_contains "$out" "records no landing place for landing-missing-$mode" \
+      "$mode: refusal did not name the missing landing place"
+    assert_contains "$out" "re-scaffold it with bin/fm-brief.sh --land <owner/repo>" \
+      "$mode: refusal did not say how to fix it"
+    assert_absent "$home/state/landing-missing-$mode.meta" "$mode: refused spawn wrote task metadata"
+
+    write_brief "$home" "landing-wrong-$mode" "$mode" other-owner/other-repo
+    out=$(run_spawn "$home" "$fakebin" "landing-wrong-$mode" "$proj" claude --mode "$mode" --yolo off)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$mode: a landing place the clone contradicts should exit non-zero"
+    assert_contains "$out" "landing mismatch for landing-wrong-$mode" \
+      "$mode: refusal did not name the task"
+    assert_contains "$out" "the brief says land=other-owner/other-repo" \
+      "$mode: refusal did not show the recorded landing place"
+    assert_contains "$out" "is $LAND_FIXTURE" "$mode: refusal did not show the repository's own origin"
+    assert_absent "$home/state/landing-wrong-$mode.meta" "$mode: refused spawn wrote task metadata"
+
+    # The agreeing case clears the check and only fails later, at the refusing tmux.
+    write_brief "$home" "landing-ok-$mode" "$mode"
+    out=$(run_spawn "$home" "$fakebin" "landing-ok-$mode" "$proj" claude --mode "$mode" --yolo off)
+    assert_not_contains "$out" "landing mismatch" "$mode: an agreeing landing place was reported as a mismatch"
+    assert_not_contains "$out" "records no landing place" "$mode: an agreeing landing place was reported as missing"
+  done
+
+  # A brief with no delivery contract line at all predates both fields, and already
+  # warns on the mode check, so it is not additionally refused for a field its
+  # generator never wrote.
+  write_brief "$home" landing-legacy
+  out=$(run_spawn "$home" "$fakebin" landing-legacy "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" "records no delivery contract line" "a legacy brief stopped warning about its missing contract"
+  assert_not_contains "$out" "records no landing place" "a legacy brief was refused a field its generator never wrote"
+
+  # local-only never pushes, so it carries and is asked for no landing place.
+  write_brief "$home" landing-local-only local-only
+  out=$(run_spawn "$home" "$fakebin" landing-local-only "$proj" claude --mode local-only --yolo off)
+  assert_not_contains "$out" "records no landing place" "a local-only spawn demanded a landing place it never uses"
+  assert_not_contains "$out" "landing mismatch" "a local-only spawn checked a landing place it does not carry"
+  pass "fm-spawn: a push-mode spawn confirms the brief's landing place against the clone's own origin"
+}
+
+# Comparison is against the repository, not the URL spelling, so an equivalent
+# remote must not read as a contradiction while a different repository still does.
+test_landing_comparison_survives_equivalent_remote_spellings() {
+  local rec home proj fakebin out url
+  rec=$(make_home landing-forms)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" landing-forms-c1 no-mistakes
+  for url in "git@github.com:$LAND_FIXTURE.git" "https://github.com/$LAND_FIXTURE" \
+             "ssh://git@github.com/$LAND_FIXTURE.git" "https://github.com/Fixture-Owner/Fixture-Repo.git"; do
+    git -C "$proj" remote set-url origin "$url"
+    out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
+    assert_not_contains "$out" "landing mismatch" "origin spelled '$url' was read as a different repository"
+  done
+
+  git -C "$proj" remote set-url origin "git@github.com:other-owner/other-repo.git"
+  out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" "landing mismatch" "a genuinely different repository was accepted"
+
+  # An origin that names no owner/repo disproves nothing, so it warns rather than
+  # refusing: an absent remote, and a bare filesystem path such as a local mirror.
+  git -C "$proj" remote set-url origin "$TMP_ROOT/local-mirror.git"
+  out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "landing mismatch" "a local-path origin was reported as a contradiction"
+  assert_contains "$out" "names no owner/repo to compare" "a local-path origin was not reported at all"
+
+  git -C "$proj" remote remove origin
+  out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "landing mismatch" "an absent origin was reported as a contradiction"
+  assert_contains "$out" "names no owner/repo to compare" "an absent origin was not reported at all"
+  git -C "$proj" remote add origin "https://github.com/$LAND_FIXTURE.git"
+  pass "fm-spawn: equivalent remote spellings agree, a different repository refuses, an unreadable origin warns"
+}
+
+# An unfilled placeholder means the intake this brief depends on never finished, so
+# the worker would be reading a template rather than instructions.
+test_spawn_refuses_a_brief_that_is_still_a_template() {
+  local rec home proj fakebin out status placeholder n=0
+  rec=$(make_home placeholders)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  for placeholder in '{TASK}' '{SCOPE_MUST_CHANGE}' '{SCOPE_MUST_NOT_TOUCH}'; do
+    n=$((n + 1))
+    write_brief "$home" "placeholder-d$n" no-mistakes
+    printf 'Must change: %s\n' "$placeholder" >> "$home/data/placeholder-d$n/brief.md"
+    out=$(run_spawn "$home" "$fakebin" "placeholder-d$n" "$proj" claude --mode no-mistakes --yolo off)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$placeholder: a brief still carrying it should exit non-zero"
+    assert_contains "$out" "still carries unfilled placeholders ($placeholder)" \
+      "$placeholder: refusal did not name the placeholder that is still unfilled"
+    assert_contains "$out" "a worker cannot be launched against a template" \
+      "$placeholder: refusal did not explain why a template cannot dispatch"
+    assert_absent "$home/state/placeholder-d$n.meta" "$placeholder: refused spawn wrote task metadata"
+  done
+
+  # Every unfilled slot is named at once, so one relaunch settles them all.
+  write_brief "$home" placeholder-all local-only
+  printf 'Must change: {SCOPE_MUST_CHANGE}\nMust not touch: {SCOPE_MUST_NOT_TOUCH}\n' \
+    >> "$home/data/placeholder-all/brief.md"
+  out=$(run_spawn "$home" "$fakebin" placeholder-all "$proj" claude --mode local-only --yolo off)
+  assert_contains "$out" "{SCOPE_MUST_CHANGE} {SCOPE_MUST_NOT_TOUCH}" \
+    "a brief with two unfilled slots did not name both"
+
+  # A filled brief clears the check and only fails later, at the refusing tmux.
+  write_brief "$home" placeholder-filled no-mistakes
+  out=$(run_spawn "$home" "$fakebin" placeholder-filled "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "unfilled placeholders" "a filled brief was refused as a template"
+  pass "fm-spawn: a ship brief still carrying its scaffold placeholders cannot dispatch"
 }
 
 # The registry is the captain's standing posture, so dropping below its rigor is
@@ -275,6 +421,9 @@ EOF
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
+test_push_mode_spawn_verifies_the_recorded_landing_place
+test_landing_comparison_survives_equivalent_remote_spellings
+test_spawn_refuses_a_brief_that_is_still_a_template
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract

@@ -11,7 +11,15 @@
 #   the mode up. A ship spawn additionally reads the brief's recorded
 #   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
 #   instructions and the recorded task delivery cannot drift apart; a brief
-#   scaffolded before that line existed warns once and launches on the flag. When
+#   scaffolded before that line existed warns once and launches on the flag. A
+#   push-mode ship spawn additionally REFUSES a brief that records a delivery
+#   contract but no landing place (the same line's " land=<owner/repo>"), or one
+#   that disagrees with the project clone's own origin, naming both values. An
+#   origin naming no owner/repo warns instead, because it disproves nothing, and a
+#   brief with no contract line at all keeps the legacy warn-and-launch path.
+#   Every ship spawn REFUSES a brief still carrying a {TASK}, {SCOPE_MUST_CHANGE},
+#   or {SCOPE_MUST_NOT_TOUCH} placeholder. Together those keep a pre-answer that
+#   was never filled, or is already wrong, from ever reaching a worker. When
 #   the explicit mode carries less rigor than the project's standing posture, a
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
@@ -1209,6 +1217,28 @@ else
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
 
+landing_owner_repo() {  # <forge-remote-url> -> owner/repo, lowercased; empty when it has none
+  local url=$1 path
+  [ -n "$url" ] || return 0
+  url=${url%/}
+  url=${url%.git}
+  case "$url" in
+    *://*) path=${url#*://}; path=${path#*/} ;;   # scheme://[user@]host/owner/repo
+    *:*)   path=${url#*:} ;;                      # git@host:owner/repo
+    # A bare filesystem path (a local mirror or the gate's own bare repo) names no
+    # owner/repo, so it is reported as unverifiable rather than compared as one.
+    *)     return 0 ;;
+  esac
+  path=${path#/}
+  case "$path" in
+    */*) ;;
+    *) return 0 ;;
+  esac
+  # Keep only the trailing owner/repo pair, which is the form --land records, and
+  # compare case-insensitively so a forge that ignores case cannot fake a mismatch.
+  printf '%s\n' "$path" | sed 's#.*/\([^/][^/]*/[^/][^/]*\)$#\1#' | tr '[:upper:]' '[:lower:]'
+}
+
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
     no-mistakes) echo 3 ;;
@@ -1240,6 +1270,39 @@ if [ "$KIND" = ship ]; then
   if [ -n "$STANDING_MODE" ] && [ "$STANDING_MODE" != no-mistakes-prod-only ] \
      && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
     echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
+  fi
+
+  # Landing pre-answer, checked before any endpoint exists. A push-mode brief tells
+  # the worker where its work lands, so a missing or already-wrong value would hand
+  # a worker a confident instruction that reality contradicts - the exact failure
+  # the pre-answer exists to prevent. The clone is re-read here rather than trusted,
+  # because the brief records what was true at intake and this is launch time. A
+  # brief with no delivery contract line at all is the legacy case the mode check
+  # above already warned about, and is not asked for a field its generator never had.
+  case "${BRIEF_MODE:+$MODE}" in
+    no-mistakes|direct-PR)
+      BRIEF_LAND=$(sed -n 's/^Delivery contract: mode=[^ ]* land=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+      if [ -z "$BRIEF_LAND" ]; then
+        echo "error: $BRIEF records no landing place for $ID; a mode=$MODE brief must carry 'Delivery contract: mode=$MODE land=<owner/repo>' from a verified read at intake - re-scaffold it with bin/fm-brief.sh --land <owner/repo>" >&2
+        exit 1
+      fi
+      LAND_ORIGIN_URL=$(git -C "$PROJ_ABS" remote get-url origin 2>/dev/null) || LAND_ORIGIN_URL=
+      LAND_ORIGIN=$(landing_owner_repo "$LAND_ORIGIN_URL")
+      if [ -z "$LAND_ORIGIN" ]; then
+        echo "warning: $ID records land=$BRIEF_LAND but origin in $PROJ_ABS (${LAND_ORIGIN_URL:-none}) names no owner/repo to compare, so the landing place could not be confirmed here; verify it before the worker pushes" >&2
+      elif [ "$LAND_ORIGIN" != "$(printf '%s\n' "$BRIEF_LAND" | tr '[:upper:]' '[:lower:]')" ]; then
+        echo "error: landing mismatch for $ID: the brief says land=$BRIEF_LAND but origin in $PROJ_ABS is $LAND_ORIGIN ($LAND_ORIGIN_URL); settle where this work lands and re-scaffold the brief rather than launching a worker whose instructions already disagree with the repository" >&2
+        exit 1
+      fi ;;
+  esac
+
+  # An unfilled placeholder means firstmate never finished the intake this brief
+  # depends on, so the worker would be reading a template, not instructions.
+  BRIEF_PLACEHOLDER=$(grep -o -e '{TASK}' -e '{SCOPE_MUST_CHANGE}' -e '{SCOPE_MUST_NOT_TOUCH}' "$BRIEF" | sort -u | tr '\n' ' ')
+  BRIEF_PLACEHOLDER=${BRIEF_PLACEHOLDER% }
+  if [ -n "$BRIEF_PLACEHOLDER" ]; then
+    echo "error: $BRIEF still carries unfilled placeholders ($BRIEF_PLACEHOLDER); fill the task description and the scope line before dispatch - a worker cannot be launched against a template" >&2
+    exit 1
   fi
 fi
 
