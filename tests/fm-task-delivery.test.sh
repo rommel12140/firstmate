@@ -311,6 +311,55 @@ EOF
   pass "fm-spawn: a ship or scout brief still carrying its scaffold placeholders cannot dispatch"
 }
 
+# The cases above build their briefs by hand, which cannot see what a real scaffold
+# actually contains. Every brief scaffolded without --herdr-lab carries a fixed
+# hard-safety paragraph that names `{TASK}` in prose, and firstmate is explicitly
+# told not to hand-edit it, so a placeholder check reading the whole file refuses
+# briefs whose slots are all correctly filled and blocks the default dispatch path
+# entirely. This round-trips the real scaffold so that defect cannot come back.
+test_a_filled_real_scaffold_dispatches() {
+  local rec home proj fakebin brief out kind
+  rec=$(make_home real-scaffold)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+
+  for kind in ship scout; do
+    if [ "$kind" = ship ]; then
+      FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
+        "$ROOT/bin/fm-brief.sh" "real-$kind" app --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1 \
+        || fail "$kind: the real scaffold did not generate"
+    else
+      FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
+        "$ROOT/bin/fm-brief.sh" "real-$kind" app --scout >/dev/null 2>&1 \
+        || fail "$kind: the real scaffold did not generate"
+    fi
+    brief="$home/data/real-$kind/brief.md"
+
+    # Assert the prose mention is really there, so this case cannot go vacuous if
+    # that paragraph is ever reworded away.
+    # shellcheck disable=SC2016  # single quotes are deliberate: this literal prose must not expand.
+    grep -F 'replaces `{TASK}` later' "$brief" >/dev/null \
+      || fail "$kind: the scaffold no longer carries the prose mention this case exists to cover"
+
+    # Fill every slot exactly as firstmate does at intake, leaving the prose alone.
+    sed -e 's/^{TASK}$/Do the real work./' \
+        -e 's/^Must change: {SCOPE_MUST_CHANGE}$/Must change: bin\/foo.sh/' \
+        -e 's/^Must not touch: {SCOPE_MUST_NOT_TOUCH}$/Must not touch: everything else/' \
+        "$brief" > "$brief.filled"
+    mv "$brief.filled" "$brief"
+
+    if [ "$kind" = ship ]; then
+      out=$(run_spawn "$home" "$fakebin" "real-$kind" "$proj" claude --mode no-mistakes --yolo off)
+    else
+      out=$(run_spawn "$home" "$fakebin" "real-$kind" "$proj" claude --scout)
+    fi
+    assert_not_contains "$out" "unfilled placeholders" \
+      "$kind: a fully filled real scaffold was refused as a template"
+  done
+  pass "fm-spawn: a real scaffold with every slot filled dispatches despite the safety paragraph naming {TASK}"
+}
+
 # The registry is the captain's standing posture, so dropping below its rigor is
 # allowed but never silent, while matching or exceeding it stays quiet. An
 # unregistered project resolves to the same no-mistakes standing default
@@ -443,6 +492,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_push_mode_spawn_verifies_the_recorded_landing_place
 test_landing_comparison_survives_equivalent_remote_spellings
 test_spawn_refuses_a_brief_that_is_still_a_template
+test_a_filled_real_scaffold_dispatches
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract

@@ -1309,7 +1309,13 @@ case "$KIND" in
     else
       BRIEF_SLOTS='\{TASK\}'
     fi
-    BRIEF_PLACEHOLDER=$(grep -o -E "$BRIEF_SLOTS" "$BRIEF" | sort -u | tr '\n' ' ')
+    # Backtick-quoted spans are dropped first: a scaffold names its own slots in
+    # prose, and the Herdr hard-safety paragraph every non---herdr-lab brief carries
+    # says the scaffold "cannot inspect the task text that replaces `{TASK}` later".
+    # Matching that prose would refuse every correctly filled brief and block the
+    # default dispatch path entirely, while firstmate is told not to hand-edit it.
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks are data to strip, never an expansion.
+    BRIEF_PLACEHOLDER=$(sed 's/`[^`]*`//g' "$BRIEF" | grep -o -E "$BRIEF_SLOTS" | sort -u | tr '\n' ' ')
     BRIEF_PLACEHOLDER=${BRIEF_PLACEHOLDER% }
     if [ -n "$BRIEF_PLACEHOLDER" ]; then
       echo "error: $BRIEF still carries unfilled placeholders ($BRIEF_PLACEHOLDER); fill the task description and the scope line before dispatch - a worker cannot be launched against a template" >&2
