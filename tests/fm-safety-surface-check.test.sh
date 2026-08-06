@@ -42,15 +42,30 @@ write_surface() {
 }
 
 write_manifest() {
-  # $1 = destination, $2 = one of: full, no-rules, empty-sentences, blank-sentence.
+  # $1 = destination, $2 = a manifest mode; see the case arms below.
   local dest=$1
   local mode=$2
+  local enforcement
   case "$mode" in
-    full)
+    no-enforcement) enforcement='' ;;
+    enforcement-empty) enforcement='"enforcement": {},' ;;
+    enforcement-no-ids)
+      enforcement='"enforcement": {"expectedRuleIds": [], "minimumSentenceCount": 2},' ;;
+    enforcement-bad-minimum)
+      enforcement='"enforcement": {"expectedRuleIds": ["never-merge-red"], "minimumSentenceCount": "two"},' ;;
+    below-minimum)
+      enforcement='"enforcement": {"expectedRuleIds": ["never-merge-red", "never-force-teardown"], "minimumSentenceCount": 3},' ;;
+    *)
+      enforcement='"enforcement": {"expectedRuleIds": ["never-merge-red", "never-force-teardown"], "minimumSentenceCount": 2},' ;;
+  esac
+
+  case "$mode" in
+    full | below-minimum | no-enforcement | enforcement-empty | enforcement-no-ids | enforcement-bad-minimum)
       cat > "$dest" <<JSON
 {
   "version": 1,
   "surface": "SURFACE.md",
+  $enforcement
   "rules": [
     {
       "id": "never-merge-red",
@@ -68,20 +83,41 @@ write_manifest() {
 }
 JSON
       ;;
-    no-rules)
-      cat > "$dest" <<'JSON'
+    missing-rule-id)
+      # The enforcement block still expects both ids; the second rule is gone,
+      # which is exactly the quiet deletion the floor exists to catch.
+      cat > "$dest" <<JSON
 {
   "version": 1,
   "surface": "SURFACE.md",
+  $enforcement
+  "rules": [
+    {
+      "id": "never-merge-red",
+      "rule": "Never merge a red PR",
+      "section": "fixture",
+      "sentences": ["$FIRST_SENTENCE", "$SECOND_SENTENCE"]
+    }
+  ]
+}
+JSON
+      ;;
+    no-rules)
+      cat > "$dest" <<JSON
+{
+  "version": 1,
+  "surface": "SURFACE.md",
+  $enforcement
   "rules": []
 }
 JSON
       ;;
     empty-sentences)
-      cat > "$dest" <<'JSON'
+      cat > "$dest" <<JSON
 {
   "version": 1,
   "surface": "SURFACE.md",
+  $enforcement
   "rules": [
     {"id": "never-merge-red", "rule": "Never merge a red PR", "section": "fixture", "sentences": []}
   ]
@@ -89,10 +125,11 @@ JSON
 JSON
       ;;
     blank-sentence)
-      cat > "$dest" <<'JSON'
+      cat > "$dest" <<JSON
 {
   "version": 1,
   "surface": "SURFACE.md",
+  $enforcement
   "rules": [
     {"id": "never-merge-red", "rule": "Never merge a red PR", "section": "fixture", "sentences": ["   "]}
   ]
@@ -175,6 +212,41 @@ test_empty_and_missing_manifest_refuse() {
   pass "an empty, vacuous, missing, or unreadable manifest refuses instead of passing"
 }
 
+test_shrunken_coverage_refuses() {
+  local repo
+  repo=$(new_fixture shrunken)
+  write_surface "$repo/SURFACE.md" full
+
+  write_manifest "$repo/manifest.json" missing-rule-id
+  run_expect_failure "never-force-teardown" "$CHECK" --root "$repo" --manifest manifest.json
+  run_expect_failure "no longer covers every expected safety rule" \
+    "$CHECK" --root "$repo" --manifest manifest.json
+
+  write_manifest "$repo/manifest.json" below-minimum
+  run_expect_failure "covers 2 sentences, short of the declared minimum of 3" \
+    "$CHECK" --root "$repo" --manifest manifest.json
+  pass "dropping a guarded rule or sentence refuses against the declared coverage floor"
+}
+
+test_absent_or_malformed_enforcement_refuses() {
+  local repo
+  repo=$(new_fixture enforcement)
+  write_surface "$repo/SURFACE.md" full
+
+  write_manifest "$repo/manifest.json" no-enforcement
+  run_expect_failure "declares no enforcement block" "$CHECK" --root "$repo" --manifest manifest.json
+
+  write_manifest "$repo/manifest.json" enforcement-empty
+  run_expect_failure "must be a non-empty object" "$CHECK" --root "$repo" --manifest manifest.json
+
+  write_manifest "$repo/manifest.json" enforcement-no-ids
+  run_expect_failure "must list the expected rule ids" "$CHECK" --root "$repo" --manifest manifest.json
+
+  write_manifest "$repo/manifest.json" enforcement-bad-minimum
+  run_expect_failure "minimumSentenceCount of at least 1" "$CHECK" --root "$repo" --manifest manifest.json
+  pass "an absent or malformed enforcement declaration refuses instead of silently disabling the floor"
+}
+
 test_missing_surface_refuses() {
   local repo
   repo=$(new_fixture no-surface)
@@ -190,4 +262,6 @@ test_complete_surface_passes
 test_missing_sentence_fails_and_names_it
 test_reworded_sentence_fails
 test_empty_and_missing_manifest_refuse
+test_shrunken_coverage_refuses
+test_absent_or_malformed_enforcement_refuses
 test_missing_surface_refuses

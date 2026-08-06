@@ -52,6 +52,7 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - [`docs/documentation-audiences.md`](docs/documentation-audiences.md) and its machine-consumed inventory own prose classification; run `bin/fm-doc-audience-check.sh` after documentation changes.
 - `docs/safety-surface-manifest.json` lists the safety sentences that must stay in `AGENTS.md` word for word; `bin/fm-safety-surface-check.sh` proves they are still there and CI runs it on every pull request.
   Editing one of those sentences means updating the manifest in the same change, and moving one out of `AGENTS.md` is a decision for the captain, not a manifest edit.
+  The manifest's `enforcement` block is the coverage floor: dropping a guarded rule fails the check until that block is edited too, so shrinking the guarantee is always a visible change rather than a quiet deletion.
 - In Markdown, put each full sentence on its own line.
 - `README.md` stays a concise overview plus pointers: it never carries a wall of inline detail.
   Route detail to the most specific `docs/` file (architecture, configuration, or a backend guide) and link to it instead.

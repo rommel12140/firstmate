@@ -4,15 +4,18 @@
 #
 # Usage:
 #   bin/fm-safety-surface-check.sh
-#   bin/fm-safety-surface-check.sh --root <repo> [--manifest <path>] [--surface <path>]
+#   bin/fm-safety-surface-check.sh --root <repo> [--manifest <path>]
 #
 # The manifest (docs/safety-surface-manifest.json) owns the never-moves list and
-# names the surface it guards; --surface overrides that for fixture runs.
+# names the surface it guards, so that surface has exactly one owner.
 # Exit 0 prints the rule and sentence counts it proved; exit 1 names the first
 # missing sentence and its rule, or the structural refusal.
 # This check compares bytes only: it does not judge which rules belong there.
 # It refuses an empty, structurally incomplete, or missing manifest, so it can
-# never pass by checking nothing.
+# never pass by checking nothing. The manifest's enforcement block declares the
+# coverage floor (which rule ids must exist, and how many sentences at least),
+# so shrinking coverage takes an explicit edit there rather than a quiet
+# deletion; an absent or malformed block refuses too.
 set -eu
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,6 +79,43 @@ def manifest_rules(data: dict) -> list[dict]:
     return rules
 
 
+def enforcement_floor(data: dict) -> tuple[list[str], int]:
+    if "enforcement" not in data:
+        fail("manifest declares no enforcement block, so coverage could shrink unnoticed")
+    block = data["enforcement"]
+    if not isinstance(block, dict) or not block:
+        fail("manifest enforcement block must be a non-empty object")
+    expected = block.get("expectedRuleIds")
+    if not isinstance(expected, list) or not expected:
+        fail("manifest enforcement block must list the expected rule ids")
+    seen: set[str] = set()
+    for index, rule_id in enumerate(expected):
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            fail(f"expected rule id {index} must be a non-empty string")
+        if rule_id in seen:
+            fail(f"expected rule id appears more than once: {rule_id}")
+        seen.add(rule_id)
+    minimum = block.get("minimumSentenceCount")
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+        fail("manifest enforcement block must declare a minimumSentenceCount of at least 1")
+    return expected, minimum
+
+
+def check_floor(rules: list[dict], expected: list[str], minimum: int, sentences: int) -> None:
+    present = {rule["id"] for rule in rules}
+    missing = [rule_id for rule_id in expected if rule_id not in present]
+    if missing:
+        fail(
+            "manifest no longer covers every expected safety rule; "
+            f"missing: {', '.join(missing)}"
+        )
+    if sentences < minimum:
+        fail(
+            f"manifest covers {sentences} sentences, short of the declared "
+            f"minimum of {minimum}"
+        )
+
+
 def read_surface(path: Path) -> str:
     try:
         text = path.read_text(encoding="utf-8")
@@ -88,17 +128,18 @@ def read_surface(path: Path) -> str:
     return text
 
 
-def validate(root: Path, manifest_path: Path, surface_override: Path | None) -> tuple[int, int, Path]:
+def validate(root: Path, manifest_path: Path) -> tuple[int, int, Path]:
     data = load_manifest(manifest_path)
     rules = manifest_rules(data)
-    surface_path = surface_override or Path(data["surface"])
+    expected, minimum = enforcement_floor(data)
+    sentences = sum(len(rule["sentences"]) for rule in rules)
+    check_floor(rules, expected, minimum, sentences)
+    surface_path = Path(data["surface"])
     if not surface_path.is_absolute():
         surface_path = root / surface_path
     surface = read_surface(surface_path)
-    sentences = 0
     for rule in rules:
         for sentence in rule["sentences"]:
-            sentences += 1
             if sentence not in surface:
                 fail(
                     f"{surface_path.name} no longer contains this safety sentence "
@@ -113,7 +154,6 @@ def main() -> int:
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--surface", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
 
@@ -122,7 +162,7 @@ def main() -> int:
         manifest_path = root / manifest_path
 
     try:
-        rules, sentences, surface_path = validate(root, manifest_path, args.surface)
+        rules, sentences, surface_path = validate(root, manifest_path)
     except CheckError as exc:
         print(f"fm-safety-surface-check: {exc}", file=sys.stderr)
         return 1

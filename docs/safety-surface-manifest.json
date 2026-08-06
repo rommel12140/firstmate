@@ -1,6 +1,24 @@
 {
   "version": 1,
   "surface": "AGENTS.md",
+  "enforcement": {
+    "description": "The coverage floor this manifest must keep. Shrinking it is an explicit, reviewable edit here, never a quiet deletion of a rule object. Adding rules may raise the minimum; nothing may lower it without the captain's word.",
+    "expectedRuleIds": [
+      "never-write-to-a-project",
+      "never-merge-without-the-captains-word",
+      "never-tear-down-unlanded-work",
+      "crewmates-never-address-the-captain",
+      "report-outcomes-faithfully",
+      "supervision-contract",
+      "isolated-worktree",
+      "lock-refused-read-only",
+      "ask-user-authority",
+      "captain-instruction-precedence",
+      "restart-recovery-promise",
+      "x-mode-consent-boundary"
+    ],
+    "minimumSentenceCount": 46
+  },
   "rules": [
     {
       "id": "never-write-to-a-project",
