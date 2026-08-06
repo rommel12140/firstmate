@@ -209,6 +209,15 @@ fm_send_resolve_target() {  # <raw-target>
       else
         assumed=tmux
       fi
+      # The STRICT recorded-endpoint read, deliberately, even though $raw was
+      # typed by a human like FM_SUPERVISOR_TARGET was: this caller sends
+      # keystrokes. Accepting the ambiguous pane-qualified `sess:A.B` here
+      # through fm_backend_supervisor_target_exists would silently deliver them
+      # to whichever endpoint tmux resolves that target to, which for a dotted
+      # window name is a different live window. A refusal the operator can
+      # retype is the safer answer for a send; only the supervisor daemon,
+      # whose alternative is a hard exit with escalations undelivered, takes
+      # the widened reading.
       if ! fm_backend_target_exists "$assumed" "$raw"; then
         echo "error: explicit target '$raw' is not a live $assumed endpoint (tried meta=$STATE/$raw.meta; metadata window/terminal lookup; backend=$assumed). Use fm-<id> for a recorded task/lane, or pass a target whose backend endpoint can be verified." >&2
         return 1

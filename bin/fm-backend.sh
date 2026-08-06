@@ -888,8 +888,13 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 }
 
 # fm_backend_supervisor_target_exists: presence for an OPERATOR-TYPED target,
-# used only by bin/fm-supervise-daemon.sh to validate FM_SUPERVISOR_TARGET at
-# startup. Separate from fm_backend_target_exists because the two answer
+# used only by bin/fm-supervise-daemon.sh, and by all three of its
+# FM_SUPERVISOR_TARGET reads: the startup validation, the injection guard, and
+# the pane-gone guard. The two runtime guards need the operator-typed reading
+# as much as the startup one does - a false absent there refuses every
+# escalation for the whole run, or backs the loop off forever with escalations
+# undelivered, instead of failing loudly at startup.
+# Separate from fm_backend_target_exists because the two answer
 # different questions: that one asks whether the exact endpoint firstmate
 # recorded is still there, this one asks whether what a human typed resolves to
 # a real endpoint the daemon can drive.
