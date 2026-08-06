@@ -882,21 +882,32 @@ test_ship_briefs_draw_the_scope_line_and_carry_the_contradiction_rule() {
     assert_grep "A finding can look like documentation and still set policy; when in doubt, treat it as beyond scope and escalate." \
       "$brief" "$mode ship brief lost the policy-shaped-documentation warning"
 
-    assert_grep "8. Pre-answered facts in this brief" "$brief" "$mode ship brief has no contradiction rule"
+    assert_grep "8. Firstmate verified this brief's pre-answered facts" "$brief" \
+      "$mode ship brief has no contradiction rule"
     assert_grep "do not obey either side: append \`blocked: {the contradiction}\` and stop" "$brief" \
       "$mode ship brief did not make a contradiction a blocked stop"
     assert_grep "Never force reality to match the brief, and never silently follow reality against the brief." \
       "$brief" "$mode ship brief lost the both-directions rule"
-    hits=$(grep -c "^8\. Pre-answered facts in this brief" "$brief" | tr -d ' ')
+    hits=$(grep -c "^8\. Firstmate verified this brief's pre-answered facts" "$brief" | tr -d ' ')
     [ "$hits" = 1 ] || fail "$mode ship brief states the contradiction rule $hits times"
+
+    # Only a dated pre-answer may claim a date. The scope line carries none in any
+    # mode, so rule 8 conditions the date clause rather than asserting it of every fact.
+    assert_grep "where one states a date, that is the date it was verified." "$brief" \
+      "$mode ship brief did not tie the verification date to the facts that state one"
+    assert_no_grep "carry the date firstmate verified them" "$brief" \
+      "$mode ship brief claimed a verification date for every pre-answer, including undated ones"
   done
 
   # Rule 8 names only the pre-answers the brief actually carries, because naming a
   # landing place a local-only brief has no push for would itself be an unverified claim.
-  assert_grep "8. Pre-answered facts in this brief (the landing place, the scope line)" \
+  assert_grep "8. Firstmate verified this brief's pre-answered facts (the landing place, the scope line)" \
     "$home/data/brief-scope-no-mistakes/brief.md" "a push-mode brief did not list both pre-answers"
-  assert_grep "8. Pre-answered facts in this brief (the scope line)" \
+  assert_grep "8. Firstmate verified this brief's pre-answered facts (the scope line)" \
     "$home/data/brief-scope-local-only/brief.md" "a local-only brief claimed a landing pre-answer it has none of"
+  # A local-only brief states no date anywhere, so its rule 8 must not assert one.
+  assert_no_grep "Firstmate verified this landing place at intake on" \
+    "$home/data/brief-scope-local-only/brief.md" "a local-only brief stamped a landing verification date"
   pass "fm-brief.sh: every ship brief draws the scope line and subordinates its pre-answers to evidence"
 }
 
@@ -951,7 +962,8 @@ test_unrelated_scaffolds_are_unchanged_and_generation_is_deterministic() {
   brief="$home/data/brief-stable-scout/brief.md"
   assert_no_grep "# Scope" "$brief" "a scout brief grew a ship scope section"
   assert_no_grep "Landing:" "$brief" "a scout brief grew a landing place it never pushes to"
-  assert_no_grep "8. Pre-answered facts" "$brief" "a scout brief grew the ship contradiction rule"
+  assert_no_grep "8. Firstmate verified this brief's pre-answered facts" "$brief" \
+    "a scout brief grew the ship contradiction rule"
 
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
     "$ROOT/bin/fm-brief.sh" brief-stable-mate --secondmate alpha >/dev/null 2>&1

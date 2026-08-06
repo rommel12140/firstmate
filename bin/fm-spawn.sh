@@ -18,7 +18,8 @@
 #   origin naming no owner/repo warns instead, because it disproves nothing, and a
 #   brief with no contract line at all keeps the legacy warn-and-launch path.
 #   Every ship spawn REFUSES a brief still carrying a {TASK}, {SCOPE_MUST_CHANGE},
-#   or {SCOPE_MUST_NOT_TOUCH} placeholder. Together those keep a pre-answer that
+#   or {SCOPE_MUST_NOT_TOUCH} placeholder, and a scout spawn REFUSES one still
+#   carrying {TASK}, the only slot its scaffold emits. Together those keep a pre-answer that
 #   was never filled, or is already wrong, from ever reaching a worker. When
 #   the explicit mode carries less rigor than the project's standing posture, a
 #   loud one-line deviation notice is printed and the spawn continues.
@@ -1295,16 +1296,26 @@ if [ "$KIND" = ship ]; then
         exit 1
       fi ;;
   esac
-
-  # An unfilled placeholder means firstmate never finished the intake this brief
-  # depends on, so the worker would be reading a template, not instructions.
-  BRIEF_PLACEHOLDER=$(grep -o -e '{TASK}' -e '{SCOPE_MUST_CHANGE}' -e '{SCOPE_MUST_NOT_TOUCH}' "$BRIEF" | sort -u | tr '\n' ' ')
-  BRIEF_PLACEHOLDER=${BRIEF_PLACEHOLDER% }
-  if [ -n "$BRIEF_PLACEHOLDER" ]; then
-    echo "error: $BRIEF still carries unfilled placeholders ($BRIEF_PLACEHOLDER); fill the task description and the scope line before dispatch - a worker cannot be launched against a template" >&2
-    exit 1
-  fi
 fi
+
+# An unfilled placeholder means firstmate never finished the intake this brief
+# depends on, so the worker would be reading a template, not instructions. Both
+# scaffolds emit {TASK}; the scope slots exist only on a ship brief, so a scout is
+# checked for the task description alone. A secondmate charter carries no slots.
+case "$KIND" in
+  ship|scout)
+    if [ "$KIND" = ship ]; then
+      BRIEF_SLOTS='\{TASK\}|\{SCOPE_MUST_CHANGE\}|\{SCOPE_MUST_NOT_TOUCH\}'
+    else
+      BRIEF_SLOTS='\{TASK\}'
+    fi
+    BRIEF_PLACEHOLDER=$(grep -o -E "$BRIEF_SLOTS" "$BRIEF" | sort -u | tr '\n' ' ')
+    BRIEF_PLACEHOLDER=${BRIEF_PLACEHOLDER% }
+    if [ -n "$BRIEF_PLACEHOLDER" ]; then
+      echo "error: $BRIEF still carries unfilled placeholders ($BRIEF_PLACEHOLDER); fill the task description and the scope line before dispatch - a worker cannot be launched against a template" >&2
+      exit 1
+    fi ;;
+esac
 
 BRIEF_DIR_REAL=$(cd "$(dirname "$BRIEF")" && pwd -P)
 BRIEF_REAL="$BRIEF_DIR_REAL/$(basename "$BRIEF")"

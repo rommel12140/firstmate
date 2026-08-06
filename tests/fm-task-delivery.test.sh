@@ -256,7 +256,8 @@ EOF
 }
 
 # An unfilled placeholder means the intake this brief depends on never finished, so
-# the worker would be reading a template rather than instructions.
+# the worker would be reading a template rather than instructions. {TASK} is on both
+# the ship and scout scaffolds; the scope slots are ship-only.
 test_spawn_refuses_a_brief_that_is_still_a_template() {
   local rec home proj fakebin out status placeholder n=0
   rec=$(make_home placeholders)
@@ -289,7 +290,25 @@ EOF
   write_brief "$home" placeholder-filled no-mistakes
   out=$(run_spawn "$home" "$fakebin" placeholder-filled "$proj" claude --mode no-mistakes --yolo off)
   assert_not_contains "$out" "unfilled placeholders" "a filled brief was refused as a template"
-  pass "fm-spawn: a ship brief still carrying its scaffold placeholders cannot dispatch"
+
+  # The scout scaffold emits the same {TASK} slot, so a scout brief that is still a
+  # template cannot dispatch either. It carries no scope slots to check.
+  write_brief "$home" placeholder-scout
+  printf 'Investigate {TASK}.\n' >> "$home/data/placeholder-scout/brief.md"
+  out=$(run_spawn "$home" "$fakebin" placeholder-scout "$proj" claude --scout)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a scout brief still carrying {TASK} should exit non-zero"
+  assert_contains "$out" "still carries unfilled placeholders ({TASK})" \
+    "scout refusal did not name the placeholder that is still unfilled"
+  assert_contains "$out" "a worker cannot be launched against a template" \
+    "scout refusal did not explain why a template cannot dispatch"
+  assert_absent "$home/state/placeholder-scout.meta" "refused scout spawn wrote task metadata"
+
+  # A filled scout brief clears the check and only fails later, at the refusing tmux.
+  write_brief "$home" placeholder-scout-filled
+  out=$(run_spawn "$home" "$fakebin" placeholder-scout-filled "$proj" claude --scout)
+  assert_not_contains "$out" "unfilled placeholders" "a filled scout brief was refused as a template"
+  pass "fm-spawn: a ship or scout brief still carrying its scaffold placeholders cannot dispatch"
 }
 
 # The registry is the captain's standing posture, so dropping below its rigor is
