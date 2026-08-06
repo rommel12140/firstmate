@@ -241,11 +241,13 @@ EOF
   assert_contains "$out" "landing mismatch" "a genuinely different repository was accepted"
 
   # An origin that names no owner/repo disproves nothing, so it warns rather than
-  # refusing: an absent remote, and a bare filesystem path such as a local mirror.
-  git -C "$proj" remote set-url origin "$TMP_ROOT/local-mirror.git"
-  out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
-  assert_not_contains "$out" "landing mismatch" "a local-path origin was reported as a contradiction"
-  assert_contains "$out" "names no owner/repo to compare" "a local-path origin was not reported at all"
+  # refusing: an absent remote, and a local mirror in either spelling git accepts.
+  for url in "$TMP_ROOT/local-mirror.git" "file://$TMP_ROOT/local-mirror.git"; do
+    git -C "$proj" remote set-url origin "$url"
+    out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
+    assert_not_contains "$out" "landing mismatch" "a local mirror spelled '$url' was reported as a contradiction"
+    assert_contains "$out" "names no owner/repo to compare" "a local mirror spelled '$url' was not reported at all"
+  done
 
   git -C "$proj" remote remove origin
   out=$(run_spawn "$home" "$fakebin" landing-forms-c1 "$proj" claude --mode no-mistakes --yolo off)
@@ -253,6 +255,40 @@ EOF
   assert_contains "$out" "names no owner/repo to compare" "an absent origin was not reported at all"
   git -C "$proj" remote add origin "https://github.com/$LAND_FIXTURE.git"
   pass "fm-spawn: equivalent remote spellings agree, a different repository refuses, an unreadable origin warns"
+}
+
+# The fork workflow that motivated the landing pre-answer fetches from the upstream
+# and pushes to the fork, so the landing place must be verified against where a push
+# actually goes. Verifying the fetch URL there would confirm a landing place no push
+# ever reaches, which is the confidently wrong pre-answer this check exists to stop.
+test_landing_is_verified_against_the_push_url() {
+  local rec home proj fakebin out status
+  rec=$(make_home landing-pushurl)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  git -C "$proj" remote set-url origin "https://github.com/upstream-owner/upstream-repo.git"
+  git -C "$proj" remote set-url --push origin "https://github.com/$LAND_FIXTURE.git"
+
+  write_brief "$home" landing-pushurl-f1 no-mistakes
+  out=$(run_spawn "$home" "$fakebin" landing-pushurl-f1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "landing mismatch" "the repository the clone actually pushes to was read as a contradiction"
+
+  write_brief "$home" landing-pushurl-f2 no-mistakes upstream-owner/upstream-repo
+  out=$(run_spawn "$home" "$fakebin" landing-pushurl-f2 "$proj" claude --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a landing place naming the fetch URL's repository should exit non-zero"
+  assert_contains "$out" "landing mismatch for landing-pushurl-f2" "the fetch-only repository was accepted as a landing place"
+  assert_contains "$out" "is $LAND_FIXTURE" "the refusal did not name the repository the clone pushes to"
+  assert_absent "$home/state/landing-pushurl-f2.meta" "refused spawn wrote task metadata"
+
+  # With no pushurl set, --push falls back to the fetch URL, so the common case is
+  # unchanged and a clone that never joined a fork workflow still verifies.
+  git -C "$proj" remote set-url --delete --push origin "https://github.com/$LAND_FIXTURE.git"
+  git -C "$proj" remote set-url origin "https://github.com/$LAND_FIXTURE.git"
+  out=$(run_spawn "$home" "$fakebin" landing-pushurl-f1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_not_contains "$out" "landing mismatch" "a clone with no pushurl stopped verifying against its fetch URL"
+  pass "fm-spawn: the landing place is verified against where the clone pushes, not where it fetches"
 }
 
 # An unfilled placeholder means the intake this brief depends on never finished, so
@@ -491,6 +527,7 @@ test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
 test_push_mode_spawn_verifies_the_recorded_landing_place
 test_landing_comparison_survives_equivalent_remote_spellings
+test_landing_is_verified_against_the_push_url
 test_spawn_refuses_a_brief_that_is_still_a_template
 test_a_filled_real_scaffold_dispatches
 test_spawn_notices_a_rigor_downgrade_against_the_registry

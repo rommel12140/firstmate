@@ -1224,6 +1224,10 @@ landing_owner_repo() {  # <forge-remote-url> -> owner/repo, lowercased; empty wh
   url=${url%/}
   url=${url%.git}
   case "$url" in
+    # file:// is git's canonical spelling of a local path, so it names no forge
+    # owner/repo any more than the bare path below does and must not have one
+    # manufactured from its trailing directories.
+    file://*) return 0 ;;
     *://*) path=${url#*://}; path=${path#*/} ;;   # scheme://[user@]host/owner/repo
     *:*)   path=${url#*:} ;;                      # git@host:owner/repo
     # A bare filesystem path (a local mirror or the gate's own bare repo) names no
@@ -1287,12 +1291,16 @@ if [ "$KIND" = ship ]; then
         echo "error: $BRIEF records no landing place for $ID; a mode=$MODE brief must carry 'Delivery contract: mode=$MODE land=<owner/repo>' from a verified read at intake - re-scaffold it with bin/fm-brief.sh --land <owner/repo>" >&2
         exit 1
       fi
-      LAND_ORIGIN_URL=$(git -C "$PROJ_ABS" remote get-url origin 2>/dev/null) || LAND_ORIGIN_URL=
+      # The push URL is what the worker's push actually reaches, and a fork workflow
+      # sets remote.origin.pushurl away from the fetch URL, so reading the fetch URL
+      # would confirm a landing place no push ever lands on. --push falls back to the
+      # fetch URL when no pushurl is set, so a clone without one is unchanged.
+      LAND_ORIGIN_URL=$(git -C "$PROJ_ABS" remote get-url --push origin 2>/dev/null) || LAND_ORIGIN_URL=
       LAND_ORIGIN=$(landing_owner_repo "$LAND_ORIGIN_URL")
       if [ -z "$LAND_ORIGIN" ]; then
-        echo "warning: $ID records land=$BRIEF_LAND but origin in $PROJ_ABS (${LAND_ORIGIN_URL:-none}) names no owner/repo to compare, so the landing place could not be confirmed here; verify it before the worker pushes" >&2
+        echo "warning: $ID records land=$BRIEF_LAND but origin's push URL in $PROJ_ABS (${LAND_ORIGIN_URL:-none}) names no owner/repo to compare, so the landing place could not be confirmed here; verify it before the worker pushes" >&2
       elif [ "$LAND_ORIGIN" != "$(printf '%s\n' "$BRIEF_LAND" | tr '[:upper:]' '[:lower:]')" ]; then
-        echo "error: landing mismatch for $ID: the brief says land=$BRIEF_LAND but origin in $PROJ_ABS is $LAND_ORIGIN ($LAND_ORIGIN_URL); settle where this work lands and re-scaffold the brief rather than launching a worker whose instructions already disagree with the repository" >&2
+        echo "error: landing mismatch for $ID: the brief says land=$BRIEF_LAND but origin's push URL in $PROJ_ABS is $LAND_ORIGIN ($LAND_ORIGIN_URL); settle where this work lands and re-scaffold the brief rather than launching a worker whose instructions already disagree with the repository" >&2
         exit 1
       fi ;;
   esac
@@ -1301,7 +1309,10 @@ fi
 # An unfilled placeholder means firstmate never finished the intake this brief
 # depends on, so the worker would be reading a template, not instructions. Both
 # scaffolds emit {TASK}; the scope slots exist only on a ship brief, so a scout is
-# checked for the task description alone. A secondmate charter carries no slots.
+# checked for the task description alone. A secondmate charter does carry {TASK} when
+# it is scaffolded without FM_SECONDMATE_CHARTER, but it is not checked here because
+# bin/fm-home-seed.sh already refuses to seed a charter still containing {TASK} and a
+# secondmate spawn requires a validated seeded home.
 case "$KIND" in
   ship|scout)
     if [ "$KIND" = ship ]; then

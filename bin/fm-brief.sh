@@ -51,8 +51,8 @@
 #                  which push. The value is recorded on the machine-readable
 #                  "Delivery contract: mode=<mode> land=<owner/repo>" line and
 #                  rendered as a Landing paragraph carrying the date this scaffold
-#                  ran. bin/fm-spawn.sh re-reads the clone's own origin and refuses
-#                  a launch whose recorded landing place disagrees.
+#                  ran. bin/fm-spawn.sh re-reads the clone's own origin push URL
+#                  and refuses a launch whose recorded landing place disagrees.
 #   Scope line     all ship briefs. A generated "# Scope" section with the
 #                  {SCOPE_MUST_CHANGE} and {SCOPE_MUST_NOT_TOUCH} placeholders
 #                  firstmate fills like {TASK}, plus the fixed gray-zone rule.
@@ -62,8 +62,10 @@
 #                  blocked: stop, never a reason to trust either side alone.
 # Intake verification, a precondition of scaffolding a push-mode ship brief:
 #   1. Read the landing place, never recall it: `git -C <clone> remote get-url
-#      origin`, normalized to owner/repo, is the only source for --land. No
-#      unambiguous origin means no --land value, so the scaffold refuses and the
+#      --push origin`, normalized to owner/repo, is the only source for --land. The
+#      push URL is read rather than the fetch URL because it is where the worker's
+#      push actually lands; it falls back to the fetch URL when no pushurl is set.
+#      No unambiguous origin means no --land value, so the scaffold refuses and the
 #      target question goes to the captain.
 #   2. For --mode no-mistakes, confirm the pipeline's own registration in that
 #      clone targets the same repository (exact invocation per no-mistakes' own
@@ -203,7 +205,7 @@ if [ "$KIND" = ship ]; then
 fi
 if [ "$PUSH_MODE" -eq 1 ]; then
   [ "$LAND_SET" -eq 1 ] || {
-    echo "error: ship briefs in mode $MODE require --land <owner/repo>; read it at intake from the project clone's own origin (git -C <clone> remote get-url origin), never from memory" >&2
+    echo "error: ship briefs in mode $MODE require --land <owner/repo>; read it at intake from where the project clone's own origin pushes (git -C <clone> remote get-url --push origin), never from memory" >&2
     exit 1
   }
   case "$LAND" in
