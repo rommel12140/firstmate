@@ -6,7 +6,8 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR> --land <owner/repo> [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --mode local-only [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -40,6 +41,37 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# Every ship brief pre-answers the decision classes a worker would otherwise stop
+# mid-run to ask. A pre-answer is only ever a fact firstmate verified or a boundary
+# it drew; it is never a delegated verdict, and the worker's authority is unchanged.
+#   Landing place  push modes only. --land <owner/repo> is REQUIRED for --mode
+#                  no-mistakes and --mode direct-PR, validated exactly like --mode:
+#                  a push-mode ship brief without it refuses to generate. It is
+#                  refused on --mode local-only, --scout, and --secondmate, none of
+#                  which push. The value is recorded on the machine-readable
+#                  "Delivery contract: mode=<mode> land=<owner/repo>" line and
+#                  rendered as a Landing paragraph carrying the date this scaffold
+#                  ran. bin/fm-spawn.sh re-reads the clone's own origin push URL
+#                  and refuses a launch whose recorded landing place disagrees.
+#   Scope line     all ship briefs. A generated "# Scope" section with the
+#                  {SCOPE_MUST_CHANGE} and {SCOPE_MUST_NOT_TOUCH} placeholders
+#                  firstmate fills like {TASK}, plus the fixed gray-zone rule.
+#                  bin/fm-spawn.sh refuses to launch a ship brief that still
+#                  carries any of those three placeholders.
+#   Contradiction  rule 8: reality disagreeing with a pre-answered fact is a
+#                  blocked: stop, never a reason to trust either side alone.
+# Intake verification, a precondition of scaffolding a push-mode ship brief:
+#   1. Read the landing place, never recall it: `git -C <clone> remote get-url
+#      --push origin`, normalized to owner/repo, is the only source for --land. The
+#      push URL is read rather than the fetch URL because it is where the worker's
+#      push actually lands; it falls back to the fetch URL when no pushurl is set.
+#      No unambiguous origin means no --land value, so the scaffold refuses and the
+#      target question goes to the captain.
+#   2. For --mode no-mistakes, confirm the pipeline's own registration in that
+#      clone targets the same repository (exact invocation per no-mistakes' own
+#      version-matched help). A mismatch is settled before scaffolding, not later.
+#   3. Scaffold in the same intake, because the generated date claims verification
+#      happened; a stale date is a false pre-answer, which is worse than a question.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -106,6 +138,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+LAND=
+LAND_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -115,6 +149,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      land) LAND=$a; LAND_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -127,6 +162,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --land) want_value=land ;;
+    --land=*) LAND=${a#--land=}; LAND_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -152,6 +189,36 @@ if [ "$KIND" = ship ]; then
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+
+# The landing place is a pre-answered fact, so it is required exactly where the
+# worker could otherwise have to ask (a mode that pushes) and refused everywhere it
+# would be a claim about a push that never happens. Missing it stops the scaffold
+# for the same reason a missing --mode does: firstmate resolves it at intake from a
+# real read, and an unfilled pre-answer must never reach a worker.
+PUSH_MODE=0
+if [ "$KIND" = ship ]; then
+  case "$MODE" in
+    no-mistakes|direct-PR) PUSH_MODE=1 ;;
+  esac
+fi
+if [ "$PUSH_MODE" -eq 1 ]; then
+  [ "$LAND_SET" -eq 1 ] || {
+    echo "error: ship briefs in mode $MODE require --land <owner/repo>; read it at intake from where the project clone's own origin pushes (git -C <clone> remote get-url --push origin), never from memory" >&2
+    exit 1
+  }
+  case "$LAND" in
+    *[[:space:]]*|*/*/*|/*|*/) LAND_OK=0 ;;
+    */*) LAND_OK=1 ;;
+    *) LAND_OK=0 ;;
+  esac
+  [ "$LAND_OK" -eq 1 ] || {
+    echo "error: --land must be a single owner/repo pair (got '$LAND')" >&2
+    exit 1
+  }
+elif [ "$LAND_SET" -eq 1 ]; then
+  echo "error: --land applies only to ship briefs that push (--mode no-mistakes or --mode direct-PR); local-only, scout, and secondmate scaffolds have no push and no landing place to state" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -297,6 +364,20 @@ EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
 
+# Batched escalation, stated once and shared by the ship and scout rule 6 so the two
+# scaffolds cannot drift. The last sentence is load-bearing: a finding that contests
+# an already-decided answer is the mechanism that catches a wrong decision, so it
+# must never be absorbed into a bundle.
+IFS= read -r -d '' RULE6_BATCH <<'EOF' || true
+   Batch your escalations: when several findings or questions are pending at the same decision point,
+   gather them into ONE `needs-decision:` line covering the whole set, rather than one line per finding.
+   Batch what is pending; do not wait to manufacture a bundle, and a finding that genuinely blocks
+   everything behind it may come alone.
+   A new finding that contests an already-decided answer is a genuinely new escalation: raise it on its
+   own terms, never fold it silently into a batch.
+EOF
+RULE6_BATCH=${RULE6_BATCH%$'\n'}
+
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
@@ -329,6 +410,7 @@ The report is the only thing that survives, so anything worth keeping must be in
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
+$RULE6_BATCH
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
@@ -348,14 +430,32 @@ fi
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
-# explicit --mode before launching.
+# explicit --mode before launching. A push mode records its verified landing place
+# on that same line as " land=<owner/repo>"; the mode parser reads up to the first
+# space, so the older single-value line and this one parse identically.
+#
+# The verification date is stamped at generation time. That is honest only because
+# the header requires intake verification to precede scaffolding, which is why rule
+# 8 tells the worker to stop rather than trust a pre-answer that reality contradicts.
+VERIFIED_DATE=$(date +%Y-%m-%d)
+# Rule 8 names the pre-answers this brief actually carries. A local-only brief has
+# no landing place, so naming one would itself be an unverified claim.
+if [ "$PUSH_MODE" -eq 1 ]; then
+  PREANSWERS="the landing place, the scope line"
+else
+  PREANSWERS="the scope line"
+fi
 case "$MODE" in
   direct-PR)
     SETUP2=""
     RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=direct-PR
+Delivery contract: mode=direct-PR land=$LAND
+Landing: push your branch to remote \`origin\` ($LAND) and open the PR on $LAND.
+Firstmate verified this landing place at intake on $VERIFIED_DATE.
+If the remotes you see disagree with this, that is a contradiction under rule 8: stop and report.
+
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
@@ -381,14 +481,19 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=no-mistakes
+Delivery contract: mode=no-mistakes land=$LAND
+Landing: the pipeline pushes your branch to remote \`origin\` ($LAND) and the pull request opens on $LAND.
+Firstmate verified this landing place at intake on $VERIFIED_DATE, including the pipeline's own registration.
+If any tool tries to land the work anywhere else, that is a contradiction under rule 8: stop and report.
+
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 
 You drive no-mistakes by responding to its gates, not by implementing fixes.
+Answer once per gate: when a gate parks several findings, gather every pending decision into one escalation to firstmate, and when the decisions come back, feed them to the gate in a single response so auto-fixable findings ride the same fix round.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
-When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` and \`# Scope\` sections plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
@@ -412,6 +517,12 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+# Scope
+Must change: {SCOPE_MUST_CHANGE}
+Must not touch: {SCOPE_MUST_NOT_TOUCH}
+Gray-zone rule: small corrections and documentation that record what this change already proves are in scope; anything that would set new policy, change what was agreed, or touch safety is beyond scope and goes back through firstmate, however small.
+A finding can look like documentation and still set policy; when in doubt, treat it as beyond scope and escalate.
 
 $HERDR_SECTION
 
@@ -447,10 +558,14 @@ $RULE1
 5. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
 6. If a decision belongs above the implementation worker (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will apply the configured authority and reply with the decision.
+$RULE6_BATCH
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Firstmate verified this brief's pre-answered facts ($PREANSWERS) at intake; where one states a date, that is the date it was verified.
+   If reality disagrees with a pre-answered fact, do not obey either side: append \`blocked: {the contradiction}\` and stop.
+   Never force reality to match the brief, and never silently follow reality against the brief.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
@@ -461,4 +576,4 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK}, {SCOPE_MUST_CHANGE}, {SCOPE_MUST_NOT_TOUCH})"

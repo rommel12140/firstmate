@@ -22,6 +22,16 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
+# A push mode carries a verified landing place; local-only pushes nothing and is
+# refused the flag, so every mode-parameterised case asks for the right flags here
+# rather than hard-coding one mode's shape.
+LAND_FIXTURE=fixture-owner/fixture-repo
+land_flags() {  # <mode> -> "--land <owner/repo>" for push modes, empty otherwise
+  case "$1" in
+    no-mistakes|direct-PR) printf '%s\n' "--land $LAND_FIXTURE" ;;
+  esac
+}
+
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
@@ -195,19 +205,22 @@ EOF
 # one of these DOD blocks, since a broken heredoc corrupts or empties the
 # generated brief content, not just the script's own syntax.
 test_ship_modes_generate_clean_briefs() {
-  local home id mode brief status
+  local home id mode brief status contract
   home="$TMP_ROOT/ship-home"
   write_registry "$home"
 
   for id_mode in "brief-nomistakes-a1:no-mistakes" "brief-directpr-a2:direct-PR" "brief-localonly-a3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1; status=$?
+    # shellcheck disable=SC2046  # land_flags is an intentional word-split arg list (may be empty)
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" $(land_flags "$mode") >/dev/null 2>&1; status=$?
     expect_code 0 "$status" "fm-brief.sh $id --mode $mode should exit 0"
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
-    grep -qx "Delivery contract: mode=$mode" "$brief" \
+    contract="Delivery contract: mode=$mode"
+    [ -z "$(land_flags "$mode")" ] || contract="$contract land=$LAND_FIXTURE"
+    grep -qx "$contract" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
@@ -251,10 +264,10 @@ test_ship_mode_is_explicit_not_registry() {
   local home brief
   home="$TMP_ROOT/explicit-over-registry-home"
   write_registry "$home"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a5 direct-proj --mode no-mistakes >/dev/null 2>&1 \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a5 direct-proj --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1 \
     || fail "explicit no-mistakes brief on a direct-PR project should scaffold"
   brief="$home/data/brief-explicit-a5/brief.md"
-  grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
+  grep -qx "Delivery contract: mode=no-mistakes land=$LAND_FIXTURE" "$brief" \
     || fail "registered direct-PR posture overrode the explicit --mode"
   assert_grep "Firstmate will then instruct you to run /no-mistakes" "$brief" \
     "explicit no-mistakes brief did not render the pipeline definition of done"
@@ -295,7 +308,7 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   home="$TMP_ROOT/configured-authority-home"
   write_registry "$home"
   id="brief-direct-authority-a4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR --land "$LAND_FIXTURE" >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_grep "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
     "direct-PR brief lost configured merge authority"
@@ -313,7 +326,7 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "local-only brief must not include the no-mistakes --intent contract"
   id="brief-direct-intent-a4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR --land "$LAND_FIXTURE" >/dev/null 2>&1
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "direct-PR brief must not include the no-mistakes --intent contract"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
@@ -326,7 +339,7 @@ test_no_mistakes_dod_wording() {
   home="$TMP_ROOT/wording-home"
   mkdir -p "$home/data"
   id="brief-wording-b1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
@@ -359,7 +372,7 @@ test_ship_project_memory_wording() {
   home="$TMP_ROOT/project-memory-home"
   mkdir -p "$home/data"
   id="brief-memory-c1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "Record only project knowledge useful to almost every future session." "$brief" \
@@ -376,7 +389,7 @@ test_herdr_lab_contract_is_explicit_and_complete() {
   home="$TMP_ROOT/herdr-lab-home"
   mkdir -p "$home/data"
   id="brief-herdr-lab-d1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --land "$LAND_FIXTURE" --herdr-lab >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "Herdr lab brief was not scaffolded"
   assert_grep "# Herdr isolation - HARD SAFETY CONTRACT" "$brief" \
@@ -428,7 +441,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
     if [ "$kind" = scout ]; then
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
     else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
     fi
     brief="$home/data/$id/brief.md"
     assert_grep "# Herdr lifecycle declaration - NOT ENABLED" "$brief" \
@@ -643,7 +656,7 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     case "$kind" in
       ship)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
-          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
         ;;
       scout)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
@@ -682,8 +695,9 @@ test_ship_brief_declares_bounded_wait_around_long_calls() {
 
   for mode in no-mistakes direct-PR local-only; do
     id="brief-long-call-$mode"
+    # shellcheck disable=SC2046  # land_flags is an intentional word-split arg list (may be empty)
     FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=paused \
-      "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" >/dev/null 2>&1 \
+      "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode "$mode" $(land_flags "$mode") >/dev/null 2>&1 \
       || fail "fm-brief.sh --mode $mode exited non-zero"
     brief="$home/data/$id/brief.md"
     folded="$home/data/$id/brief.folded"
@@ -713,7 +727,7 @@ test_ship_brief_declares_bounded_wait_around_long_calls() {
 
   # The configured pause verb still drives the new sentence.
   FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
-    "$ROOT/bin/fm-brief.sh" brief-long-call-verb firstmate --mode no-mistakes >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" brief-long-call-verb firstmate --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
   folded="$home/data/brief-long-call-verb/brief.folded"
   tr -s '[:space:]' ' ' < "$home/data/brief-long-call-verb/brief.md" > "$folded"
   # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
@@ -762,6 +776,217 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# The landing place is required exactly where the worker could otherwise have to ask
+# (a mode that pushes) and refused everywhere it would claim a push that never
+# happens. A missing value must stop the scaffold the way a missing --mode does,
+# because an unfilled pre-answer reaching a worker is the whole failure being fixed.
+test_landing_place_is_required_for_push_modes_and_refused_elsewhere() {
+  local home out status label args expect
+  home="$TMP_ROOT/landing-required-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
+  done <<'ROWS'
+no-mistakes without a landing place|brief-land-e1 some-proj --mode no-mistakes|ship briefs in mode no-mistakes require --land <owner/repo>
+direct-PR without a landing place|brief-land-e2 some-proj --mode direct-PR|ship briefs in mode direct-PR require --land <owner/repo>
+empty --land value|brief-land-e3 some-proj --mode direct-PR --land|--land requires a value
+landing place is not an owner/repo pair|brief-land-e4 some-proj --mode direct-PR --land justrepo|--land must be a single owner/repo pair
+landing place carries a third path component|brief-land-e5 some-proj --mode no-mistakes --land group/sub/repo|--land must be a single owner/repo pair
+landing place on a mode that never pushes|brief-land-e6 some-proj --mode local-only --land own/rep|--land applies only to ship briefs that push
+landing place on a scout|brief-land-e7 some-proj --scout --land own/rep|--land applies only to ship briefs that push
+landing place on a secondmate charter|brief-land-e8 --secondmate --no-projects --land own/rep|--land applies only to ship briefs that push
+ROWS
+  assert_absent "$home/data/brief-land-e1/brief.md" "a refused push-mode scaffold still wrote a brief"
+  pass "fm-brief.sh: the verified landing place is required for push modes and refused for the rest"
+}
+
+# The Landing paragraph is a fact with provenance: it names the same repository for
+# the push and the PR, carries the date this scaffold ran, and routes any
+# disagreement to rule 8 instead of letting the worker pick a side.
+test_landing_paragraph_renders_per_mode_with_its_verification_date() {
+  local home brief before after date
+  home="$TMP_ROOT/landing-render-home"
+  mkdir -p "$home/data"
+
+  before=$(date +%Y-%m-%d)
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-land-f1 some-proj --mode no-mistakes --land own/rep >/dev/null 2>&1 \
+    || fail "a no-mistakes scaffold carrying --land should succeed"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-land-f2 some-proj --mode direct-PR --land own/rep >/dev/null 2>&1 \
+    || fail "a direct-PR scaffold carrying --land should succeed"
+  after=$(date +%Y-%m-%d)
+
+  brief="$home/data/brief-land-f1/brief.md"
+  grep -qx "Delivery contract: mode=no-mistakes land=own/rep" "$brief" \
+    || fail "no-mistakes brief did not record the landing place on its delivery contract line"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'Landing: the pipeline pushes your branch to remote `origin` (own/rep) and the pull request opens on own/rep.' \
+    "$brief" "no-mistakes brief did not name one repository for both the push and the PR"
+  assert_grep "including the pipeline's own registration" "$brief" \
+    "no-mistakes brief did not claim the registration was verified too"
+  assert_grep "If any tool tries to land the work anywhere else, that is a contradiction under rule 8: stop and report." \
+    "$brief" "no-mistakes brief did not route a landing disagreement to rule 8"
+
+  date=$(sed -n 's/^Firstmate verified this landing place at intake on \([0-9-]*\).*$/\1/p' "$brief" | head -n 1)
+  case "$date" in
+    "$before"|"$after") ;;
+    *) fail "no-mistakes brief stamped '$date', not the date the scaffold ran ($before/$after)" ;;
+  esac
+
+  brief="$home/data/brief-land-f2/brief.md"
+  grep -qx "Delivery contract: mode=direct-PR land=own/rep" "$brief" \
+    || fail "direct-PR brief did not record the landing place on its delivery contract line"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'Landing: push your branch to remote `origin` (own/rep) and open the PR on own/rep.' \
+    "$brief" "direct-PR brief did not name one repository for both the push and the PR"
+  assert_no_grep "including the pipeline's own registration" "$brief" \
+    "direct-PR brief claimed a pipeline registration it never runs"
+  assert_grep "If the remotes you see disagree with this, that is a contradiction under rule 8: stop and report." \
+    "$brief" "direct-PR brief did not route a landing disagreement to rule 8"
+
+  # local-only pushes nothing, so it must make no landing claim at all.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-land-f3 some-proj --mode local-only >/dev/null 2>&1
+  brief="$home/data/brief-land-f3/brief.md"
+  grep -qx "Delivery contract: mode=local-only" "$brief" \
+    || fail "local-only brief did not keep its bare delivery contract line"
+  assert_no_grep "Landing:" "$brief" "local-only brief invented a landing place"
+  assert_no_grep " land=" "$brief" "local-only brief recorded a landing place it has no push for"
+  pass "fm-brief.sh: each push mode renders its own Landing paragraph with the date it was verified"
+}
+
+# The scope line draws the boundary before the worker starts, and rule 8 keeps every
+# pre-answer subordinate to evidence: a contradiction is a stop, never a licence to
+# trust the brief over reality or reality over the brief.
+test_ship_briefs_draw_the_scope_line_and_carry_the_contradiction_rule() {
+  local home mode id brief hits
+  home="$TMP_ROOT/scope-home"
+  mkdir -p "$home/data"
+
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-scope-$mode"
+    # shellcheck disable=SC2046  # land_flags is an intentional word-split arg list (may be empty)
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" $(land_flags "$mode") >/dev/null 2>&1 \
+      || fail "fm-brief.sh --mode $mode exited non-zero"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Scope" "$brief" "$mode ship brief has no scope section"
+    assert_grep "Must change: {SCOPE_MUST_CHANGE}" "$brief" \
+      "$mode ship brief lost the firstmate-filled must-change slot"
+    assert_grep "Must not touch: {SCOPE_MUST_NOT_TOUCH}" "$brief" \
+      "$mode ship brief lost the firstmate-filled must-not-touch slot"
+    assert_grep "Gray-zone rule: small corrections and documentation that record what this change already proves are in scope; anything that would set new policy, change what was agreed, or touch safety is beyond scope and goes back through firstmate, however small." \
+      "$brief" "$mode ship brief did not carry the confirmed gray-zone rule verbatim"
+    assert_grep "A finding can look like documentation and still set policy; when in doubt, treat it as beyond scope and escalate." \
+      "$brief" "$mode ship brief lost the policy-shaped-documentation warning"
+
+    assert_grep "8. Firstmate verified this brief's pre-answered facts" "$brief" \
+      "$mode ship brief has no contradiction rule"
+    assert_grep "do not obey either side: append \`blocked: {the contradiction}\` and stop" "$brief" \
+      "$mode ship brief did not make a contradiction a blocked stop"
+    assert_grep "Never force reality to match the brief, and never silently follow reality against the brief." \
+      "$brief" "$mode ship brief lost the both-directions rule"
+    hits=$(grep -c "^8\. Firstmate verified this brief's pre-answered facts" "$brief" | tr -d ' ')
+    [ "$hits" = 1 ] || fail "$mode ship brief states the contradiction rule $hits times"
+
+    # Only a dated pre-answer may claim a date. The scope line carries none in any
+    # mode, so rule 8 conditions the date clause rather than asserting it of every fact.
+    assert_grep "where one states a date, that is the date it was verified." "$brief" \
+      "$mode ship brief did not tie the verification date to the facts that state one"
+    assert_no_grep "carry the date firstmate verified them" "$brief" \
+      "$mode ship brief claimed a verification date for every pre-answer, including undated ones"
+  done
+
+  # Rule 8 names only the pre-answers the brief actually carries, because naming a
+  # landing place a local-only brief has no push for would itself be an unverified claim.
+  assert_grep "8. Firstmate verified this brief's pre-answered facts (the landing place, the scope line)" \
+    "$home/data/brief-scope-no-mistakes/brief.md" "a push-mode brief did not list both pre-answers"
+  assert_grep "8. Firstmate verified this brief's pre-answered facts (the scope line)" \
+    "$home/data/brief-scope-local-only/brief.md" "a local-only brief claimed a landing pre-answer it has none of"
+  # A local-only brief states no date anywhere, so its rule 8 must not assert one.
+  assert_no_grep "Firstmate verified this landing place at intake on" \
+    "$home/data/brief-scope-local-only/brief.md" "a local-only brief stamped a landing verification date"
+  pass "fm-brief.sh: every ship brief draws the scope line and subordinates its pre-answers to evidence"
+}
+
+# Batching is a contract, not worker initiative. The third sentence is the one that
+# must survive: a finding contesting an already-decided answer is what catches a
+# wrong decision, so it can never be absorbed into a bundle.
+test_batched_escalation_is_contracted_for_ship_and_scout() {
+  local home kind id brief hits
+  home="$TMP_ROOT/batching-home"
+  mkdir -p "$home/data"
+
+  for kind in ship scout; do
+    id="brief-batch-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --land own/rep >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_grep "Batch your escalations: when several findings or questions are pending at the same decision point," \
+      "$brief" "$kind brief has no batched-escalation contract"
+    assert_grep "gather them into ONE \`needs-decision:\` line covering the whole set, rather than one line per finding." \
+      "$brief" "$kind brief did not require one escalation per decision point"
+    assert_grep "do not wait to manufacture a bundle, and a finding that genuinely blocks" "$brief" \
+      "$kind brief did not exempt a genuinely blocking finding from waiting for a bundle"
+    assert_grep "A new finding that contests an already-decided answer is a genuinely new escalation: raise it on its" \
+      "$brief" "$kind brief let a contest of a decided answer be batched away"
+    hits=$(grep -c "Batch your escalations" "$brief" | tr -d ' ')
+    [ "$hits" = 1 ] || fail "$kind brief states the batching contract $hits times"
+  done
+
+  # The gate side of the same contract, and the scope line reaching the pipeline's
+  # own classification through the existing --intent sentence.
+  brief="$home/data/brief-batch-ship/brief.md"
+  assert_grep "Answer once per gate: when a gate parks several findings, gather every pending decision into one escalation to firstmate, and when the decisions come back, feed them to the gate in a single response so auto-fixable findings ride the same fix round." \
+    "$brief" "no-mistakes brief did not contract one response per gate"
+  assert_grep "preserve all relevant content from this brief's \`# Task\` and \`# Scope\` sections" "$brief" \
+    "no-mistakes brief did not route the scope line into --intent"
+  pass "fm-brief.sh: ship and scout briefs contract batched escalation and single gate responses"
+}
+
+# Scaffolds this change does not own must be untouched by it, and repeated
+# generation from the same inputs must produce identical bytes, so the pre-answers
+# cannot leak into briefs that carry no push, no scope line, and no rule 8.
+test_unrelated_scaffolds_are_unchanged_and_generation_is_deterministic() {
+  local home repeat brief id
+  home="$TMP_ROOT/stability-home"
+  repeat="$TMP_ROOT/stability-repeat-home"
+  mkdir -p "$home/data" "$repeat/data"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-stable-scout some-proj --scout >/dev/null 2>&1
+  brief="$home/data/brief-stable-scout/brief.md"
+  assert_no_grep "# Scope" "$brief" "a scout brief grew a ship scope section"
+  assert_no_grep "Landing:" "$brief" "a scout brief grew a landing place it never pushes to"
+  assert_no_grep "8. Firstmate verified this brief's pre-answered facts" "$brief" \
+    "a scout brief grew the ship contradiction rule"
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise the alpha domain.' \
+    "$ROOT/bin/fm-brief.sh" brief-stable-mate --secondmate alpha >/dev/null 2>&1
+  brief="$home/data/brief-stable-mate/brief.md"
+  assert_no_grep "# Scope" "$brief" "a secondmate charter grew a ship scope section"
+  assert_no_grep "Landing:" "$brief" "a secondmate charter grew a landing place"
+  assert_no_grep "Batch your escalations" "$brief" \
+    "a secondmate charter took the crewmate batching contract instead of its own escalation rules"
+
+  # The two homes differ only by their own path, which the scaffold renders into
+  # status and report paths, so fold that one difference out and compare the rest.
+  FM_HOME="$repeat" "$ROOT/bin/fm-brief.sh" brief-stable-scout some-proj --scout >/dev/null 2>&1
+  FM_HOME="$repeat" "$ROOT/bin/fm-brief.sh" brief-stable-ship some-proj --mode no-mistakes --land own/rep >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-stable-ship some-proj --mode no-mistakes --land own/rep >/dev/null 2>&1
+  for id in brief-stable-scout brief-stable-ship; do
+    sed "s#$home#HOME#g" "$home/data/$id/brief.md" > "$TMP_ROOT/stable-a"
+    sed "s#$repeat#HOME#g" "$repeat/data/$id/brief.md" > "$TMP_ROOT/stable-b"
+    cmp -s "$TMP_ROOT/stable-a" "$TMP_ROOT/stable-b" \
+      || fail "repeat generation of $id from identical inputs changed bytes"
+  done
+  pass "fm-brief.sh: scout and secondmate scaffolds are untouched and generation is deterministic"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -783,3 +1008,8 @@ test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_brief_declares_bounded_wait_around_long_calls
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_landing_place_is_required_for_push_modes_and_refused_elsewhere
+test_landing_paragraph_renders_per_mode_with_its_verification_date
+test_ship_briefs_draw_the_scope_line_and_carry_the_contradiction_rule
+test_batched_escalation_is_contracted_for_ship_and_scout
+test_unrelated_scaffolds_are_unchanged_and_generation_is_deterministic
