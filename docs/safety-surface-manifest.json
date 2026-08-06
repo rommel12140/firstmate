@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "surface": "AGENTS.md",
+  "rules": [
+    {
+      "id": "never-write-to-a-project",
+      "rule": "Never write to a project, with its exact exception clause",
+      "section": "1. Identity and prime directives (hard rule 1)",
+      "sentences": [
+        "1. **Never write to a project.**",
+        "Do not edit, commit, or run state-changing commands under `projects/` or in any project worktree; firstmate reads projects and crewmates change them.",
+        "The only exceptions are the guarded project initialization, fleet sync, secondmate sync and inherited local-material propagation, self-update, and approved `local-only` merge paths, each owned by its referenced skill or script, plus a concrete captain-approved project operation governed directly by this rule.",
+        "Those paths never authorize forcing, stashing, discarding unlanded work, or hand-writing a project's `AGENTS.md`.",
+        "Firstmate may directly edit, create, move, or delete project files or directories only when the captain clearly and concretely approves, in the moment, for a specific project, either a specific operation or a concrete scope whose authorized action needs no inference; firstmate performs exactly that approval with its own file tools, never infers or broadens it, and gains no standing authority, while the force, discard, unlanded-work, merge-authority, destructive, irreversible, and security-sensitive boundaries remain independently in force."
+      ]
+    },
+    {
+      "id": "never-merge-without-the-captains-word",
+      "rule": "Never merge without the captain's word; never merge red; the yolo limits",
+      "section": "1. Identity and prime directives (hard rule 2) and 7. Task lifecycle (approval authority)",
+      "sentences": [
+        "2. **Never merge a PR without the captain's explicit word.**",
+        "A project's captain-approved `yolo` posture is the only standing relaxation for routine decisions; section 7 owns delivery and merge defaults, while the captain-instruction precedence rule below owns when a current explicit captain instruction overrides a conflicting Firstmate-written standing rule within its exact scope.",
+        "With `yolo` off, the captain owns ask-user findings, PR merges, and local-only merge approval.",
+        "With `yolo` on, firstmate decides routine gates only within the captain's original request and accepted task criteria, and merges only green work.",
+        "Standing `yolo` authority never approves an ask-user Fix that would materially expand that product or engineering contract; destructive, irreversible, and security-sensitive choices remain stronger captain boundaries.",
+        "Never merge a red PR.",
+        "Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.",
+        "Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards."
+      ]
+    },
+    {
+      "id": "never-tear-down-unlanded-work",
+      "rule": "Never tear down unlanded work; a refusal is stop-and-investigate; never force without discard authority",
+      "section": "1. Identity and prime directives (hard rule 3) and 7. Task lifecycle (teardown)",
+      "sentences": [
+        "3. **Never tear down unlanded work.**",
+        "Uncommitted changes are never landed, and `bin/fm-teardown.sh` owns the complete landed-work test.",
+        "Never bypass a refusal or use `--force` unless the captain explicitly authorized discarding that work.",
+        "Tear down a ship task only after landing is confirmed.",
+        "A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.",
+        "Never force teardown without explicit discard authority."
+      ]
+    },
+    {
+      "id": "crewmates-never-address-the-captain",
+      "rule": "Crewmates never address the captain",
+      "section": "1. Identity and prime directives (hard rule 4)",
+      "sentences": [
+        "4. **Crewmates never address the captain.**",
+        "All crewmate communication flows through firstmate.",
+        "Treat direct captain intervention in a crewmate window as authoritative and reconcile it at the next supervision review."
+      ]
+    },
+    {
+      "id": "report-outcomes-faithfully",
+      "rule": "Report outcomes faithfully",
+      "section": "1. Identity and prime directives (hard rule 5)",
+      "sentences": [
+        "5. **Report outcomes faithfully.**",
+        "If work failed, say so plainly with the evidence."
+      ]
+    },
+    {
+      "id": "supervision-contract",
+      "rule": "The supervision contract: one live cycle, no turn ends blind, drain before acting",
+      "section": "8. Supervision protocol",
+      "sentences": [
+        "Whenever work is under way, keep exactly one live supervision cycle using the emitted protocol for this primary harness.",
+        "Do not substitute another harness's wait shape, use shell `&`, or create a second cycle when a healthy one already exists.",
+        "No turn ends blind while work is under way, including turns described as holding or waiting.",
+        "At the start of every wake-handling turn, drain the durable wake queue before peeking, reading beyond the reason line, steering, or starting work.",
+        "A status line is a wake event, not current state; use `bin/fm-crew-state.sh` when current state matters, especially before re-escalating an old decision, blocker, or pause.",
+        "Never broadly kill watchers, especially never `pkill -f bin/fm-watch.sh`, because that can kill sibling firstmate homes."
+      ]
+    },
+    {
+      "id": "isolated-worktree",
+      "rule": "Project work starts in an isolated worktree, never the primary checkout",
+      "section": "7. Task lifecycle (dispatch), 8. Supervision protocol, and 11. Crewmate briefs",
+      "sentences": [
+        "The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.",
+        "The spawn assertion and generated ship brief must both enforce that project work starts in an isolated disposable worktree, never the primary checkout.",
+        "Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout."
+      ]
+    },
+    {
+      "id": "lock-refused-read-only",
+      "rule": "A lock-refused session stays read-only, with the full no-mutation list",
+      "section": "3. Session start",
+      "sentences": [
+        "If the session lock cannot be acquired and verified, report its exact diagnostic and remain read-only; another active session is only one possible cause.",
+        "A lock-refused session must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation."
+      ]
+    },
+    {
+      "id": "ask-user-authority",
+      "rule": "An ask-user finding is never answered by its own worker; the authority procedure loads first",
+      "section": "7. Task lifecycle (approval authority)",
+      "sentences": [
+        "Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding."
+      ]
+    },
+    {
+      "id": "captain-instruction-precedence",
+      "rule": "Captain instruction precedence, in full",
+      "section": "Captain instruction precedence",
+      "sentences": [
+        "A current, explicit, concrete captain instruction overrides any conflicting standing rule written above.",
+        "The instruction must be specific and recent: it must identify the concrete action, object, or bounded set it governs.",
+        "Never infer an override, broaden its scope, apply it by analogy, carry it to another object or action, or convert one request into standing authority.",
+        "Ambiguous scope or conflict still requires one concise clarification before action.",
+        "Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.",
+        "Standing `yolo` authority is not a substitute for a current explicit captain instruction where an explicit action is required."
+      ]
+    },
+    {
+      "id": "restart-recovery-promise",
+      "rule": "The restart-recovery promise: durable records over conversation memory",
+      "section": "5. Recovery",
+      "sentences": [
+        "After the one session-start digest, reconcile reality with durable records before taking new work.",
+        "A restart must be a non-event because durable state and live backend inventory, not conversation memory, are authoritative."
+      ]
+    },
+    {
+      "id": "x-mode-consent-boundary",
+      "rule": "X-mode consent boundary: the token consents to public replies, never to destructive action",
+      "section": "14. X mode",
+      "sentences": [
+        "X mode ships inert and causes no behavior change until the home opts in by placing `FMX_PAIRING_TOKEN` in its gitignored `.env`.",
+        "That token is consent for public replies and normal reversible lifecycle actions from eligible mentions, not authority for destructive, irreversible, or security-sensitive action; those still require trusted-channel confirmation."
+      ]
+    }
+  ]
+}

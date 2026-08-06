@@ -373,6 +373,12 @@ jobs:
           set -eu
           [ "$(readlink CLAUDE.md)" = "AGENTS.md" ] || { echo "::error::CLAUDE.md must be a symlink to AGENTS.md"; exit 1; }
           [ "$(readlink .claude/skills)" = "../.agents/skills" ] || { echo "::error::.claude/skills must be a symlink to ../.agents/skills"; exit 1; }
+      # The always-read safety sentences must still be in AGENTS.md verbatim.
+      # tests/fm-safety-surface-check.test.sh pins the checker's behavior on
+      # fixtures; only this step runs it against the real file, so restructuring
+      # work cannot drop a safety rule off the surface without failing CI.
+      - name: Safety surface must stay in AGENTS.md
+        run: bin/fm-safety-surface-check.sh
       - name: Personal fleet paths must not be tracked
         run: |
           set -eu
