@@ -836,14 +836,23 @@ fm_backend_composer_state() {  # <backend> <target> -> empty|pending|pending-unp
 # probe). A gone tmux window or an unqueryable herdr pane (server down, pane
 # closed), missing zellij pane, or unreadable Orca terminal simply fails, which
 # IS "does not exist" for this purpose.
-# Mirrors fm-crew-state.sh's pane_readable check; exists here as one shared
-# primitive so callers that only need a fast alive/dead read (recovery
-# digests, the session-start fleet digest) do not re-derive it inline.
+# This is the one shared primitive for a fast alive/dead read, so callers that
+# need one (recovery digests, the session-start fleet digest,
+# fm-crew-state.sh's pane_readable fallback) do not re-derive it inline. Each
+# backend's own presence rule lives in its adapter; the tmux rule in
+# particular must not be reduced back to a bare `display-message` exit code,
+# which reports every target alive - see fm_backend_tmux_target_exists.
+#
+# Every caller here judges a RECORDED endpoint, so the strict reading is the
+# only correct one. A target an operator typed is a different question with a
+# different answer - use fm_backend_supervisor_target_exists below for that,
+# and do not relax this one to accommodate it.
 fm_backend_target_exists() {  # <backend> <target> [expected-label]
   local backend=$1 target=$2 expected_label=${3:-} session pane
   case "$backend" in
     tmux)
-      tmux display-message -p -t "$target" '#{pane_id}' >/dev/null 2>&1
+      fm_backend_source tmux || return 1
+      fm_backend_tmux_target_exists "$target"
       ;;
     herdr)
       fm_backend_source herdr || return 1
@@ -874,6 +883,36 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
       ;;
     *)
       return 1
+      ;;
+  esac
+}
+
+# fm_backend_supervisor_target_exists: presence for an OPERATOR-TYPED target,
+# used only by bin/fm-supervise-daemon.sh, and by all three of its
+# FM_SUPERVISOR_TARGET reads: the startup validation, the injection guard, and
+# the pane-gone guard. The two runtime guards need the operator-typed reading
+# as much as the startup one does - a false absent there refuses every
+# escalation for the whole run, or backs the loop off forever with escalations
+# undelivered, instead of failing loudly at startup.
+# Separate from fm_backend_target_exists because the two answer
+# different questions: that one asks whether the exact endpoint firstmate
+# recorded is still there, this one asks whether what a human typed resolves to
+# a real endpoint the daemon can drive.
+#
+# The distinction is load-bearing only for tmux, whose `sess:A.B` target form is
+# ambiguous between a window named `A.B` and window `A` pane `B` - see
+# fm_backend_tmux_supervisor_target_exists. No other backend has an operator-
+# typed form its recorded-endpoint read would reject, so they share the strict
+# path and gain nothing to keep in sync.
+fm_backend_supervisor_target_exists() {  # <backend> <target> [expected-label]
+  local backend=$1 target=$2
+  case "$backend" in
+    tmux)
+      fm_backend_source tmux || return 1
+      fm_backend_tmux_supervisor_target_exists "$target"
+      ;;
+    *)
+      fm_backend_target_exists "$@"
       ;;
   esac
 }

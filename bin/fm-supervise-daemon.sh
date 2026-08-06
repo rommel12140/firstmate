@@ -1132,7 +1132,10 @@ inject_msg() {  # <message> [state]
   # when unset (sourced/test contexts that never ran fm_super_main's startup
   # discovery), matching this function's pre-existing default assumption.
   backend="${FM_SUPERVISOR_BACKEND:-tmux}"
-  fm_backend_target_exists "$backend" "$target" || return 1
+  # Supervisor variant, like the startup validation: $target is the same
+  # operator-supplied FM_SUPERVISOR_TARGET, so a pane-qualified form must resolve
+  # here or injection is refused for the whole run.
+  fm_backend_supervisor_target_exists "$backend" "$target" || return 1
   # (3) Busy-guard: never inject into an in-use supervisor pane.
   if pane_is_busy "$target" "$backend"; then
     log "inject deferred: supervisor pane busy (agent mid-turn)"
@@ -1395,10 +1398,18 @@ fm_super_main() {
 
   # --- validate supervisor target at startup (a missing target is a typo) ---
   # Dispatches through bin/fm-backend.sh instead of a raw `tmux display-message`
-  # probe, so a herdr supervisor pane is checked via the herdr adapter; for
-  # backend=tmux this runs the exact same `tmux display-message -p -t "$TARGET"
-  # '#{pane_id}'` call as before.
-  if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
+  # probe, so a herdr supervisor pane is checked via the herdr adapter; the
+  # backend=tmux arm compares the endpoint tmux actually resolved the target to
+  # against the target itself, then falls back to a literal window inventory.
+  # It deliberately is NOT the old `display-message -t "$TARGET"` exit code,
+  # which answers from the client's own window and so passed every target.
+  #
+  # This uses the supervisor variant, not the recorded-endpoint primitive: TARGET
+  # is operator-supplied and docs/configuration.md documents FM_SUPERVISOR_TARGET
+  # as an unrestricted tmux target, so the pane-qualified forms must resolve here
+  # rather than hard-exiting. The strict primitive keeps judging recorded task
+  # endpoints, where those same forms would be a false alive.
+  if ! fm_backend_supervisor_target_exists "$BACKEND" "$TARGET"; then
     echo "error: supervisor target '$TARGET' does not resolve to a $BACKEND pane; set FM_SUPERVISOR_TARGET" >&2
     log "startup failed: target '$TARGET' not found (backend=$BACKEND)"
     fm_lock_release "$LOCK" 2>/dev/null || true
@@ -1466,7 +1477,10 @@ fm_super_main() {
     # has nowhere to go, and firstmate itself is the consumer of escalations.
     # Catch-up signals persist in state/*.status and flow on the next run, so
     # this delays rather than loses work.
-    if ! fm_backend_target_exists "$BACKEND" "$TARGET"; then
+    # Supervisor variant for the same reason as the startup validation and the
+    # injection guard: $TARGET is operator-supplied, and reading a pane-qualified
+    # form as gone would back this loop off forever with escalations undelivered.
+    if ! fm_backend_supervisor_target_exists "$BACKEND" "$TARGET"; then
       log "warn: supervisor target '$TARGET' gone; backing off ${INJECT_FAIL_SLEEP}s, will retry"
       # Flush is pointless with no pane; preserve any buffered escalations.
       sleep "$INJECT_FAIL_SLEEP"

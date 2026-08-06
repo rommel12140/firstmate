@@ -206,24 +206,25 @@ SH
   chmod +x "$fakebin/ps"
 }
 
-# make_fake_tmux <fakebin> <live-target>: display-message succeeds only for
-# the given "session:window" target - the exact primitive
-# fm_backend_target_exists uses for a tmux endpoint liveness read.
+# make_fake_tmux <fakebin> <live-target>: a server whose only window is the
+# given "session:window" target. Presence is answered from the window
+# inventory, which is the primitive fm_backend_target_exists uses: real tmux
+# answers a display-message for an absent target from the current client's own
+# window and still exits 0, so this fixture serves that fallback too and a
+# probe built on the exit code would report every target alive here.
 make_fake_tmux() {
   local fakebin=$1 live=$2
   cat > "$fakebin/tmux" <<SH
 #!/usr/bin/env bash
 set -u
 case "\${1:-}" in
+  list-windows)
+    printf '%s\n' "$live"
+    exit 0
+    ;;
   display-message)
-    target=""
-    prev=""
-    for a in "\$@"; do
-      [ "\$prev" = "-t" ] && target="\$a"
-      prev="\$a"
-    done
-    [ "\$target" = "$live" ] && { printf '%%1\n'; exit 0; }
-    exit 1
+    printf '%%1\n'
+    exit 0
     ;;
 esac
 exit 1
@@ -293,12 +294,24 @@ case "${1:-}" in
       exit 1
     fi
     if [ -e "$spawned" ]; then
-      printf '%s\n' "$mate_window"
+      names=$mate_window
     elif [ ! -e "$killed" ] && { [ "$mode" = ambiguous ] || [ "$mode" = shell ]; }; then
-      printf '%s\n' "$mate_window"
+      names=$mate_window
     else
-      printf '%s\n' main
+      names=main
     fi
+    # `-a` is the server-wide inventory the endpoint-presence read uses, and it
+    # asks for session-qualified names; the session-scoped call agent-state
+    # makes asks for bare window names. The same inventory answers both, so a
+    # window this fixture says is gone cannot come back as present through the
+    # other read.
+    for arg in "$@"; do
+      if [ "$arg" = -a ]; then
+        printf 'firstmate:%s\n' $names
+        exit 0
+      fi
+    done
+    printf '%s\n' $names
     exit 0
     ;;
   has-session) exit 0 ;;

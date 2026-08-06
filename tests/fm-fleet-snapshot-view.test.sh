@@ -30,7 +30,15 @@ for arg in "$@"; do
 done
 case "${1:-}" in
   list-windows)
-    sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
+    # `-a` is the server-wide inventory the endpoint-presence read uses, and
+    # it asks for session-qualified names; the session-scoped call the
+    # agent-state classifier makes asks for bare window names. Both are
+    # answered from the same recorded windows, so an endpoint cannot read
+    # present through one and absent through the other.
+    case " $* " in
+      *" -a "*) sed -n 's/^window=//p' "${FM_HOME:?}"/state/*.meta ;;
+      *) sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta ;;
+    esac
     ;;
   display-message)
     case "$*" in

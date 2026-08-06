@@ -137,14 +137,16 @@ resolve_permissive_tmux_kill_ref() {
 # root makes "$FM_ROOT/bin/fm-project-mode.sh" (etc.) resolve correctly.
 # fm-backend.sh (and its bin/backends/ adapters) is the dispatcher every one
 # of the five REFACTORED scripts sources; it must be a real, reachable file in
-# the old bin/ too or `. "$SCRIPT_DIR/fm-backend.sh"` aborts under set -eu -
-# hence the dispatcher is a copied sibling, while the tmux adapter is extracted
-# from BASE_REF so conformance tests retain the exact historical behavior even
-# when this branch changes tmux dispatch semantics.
-OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-session-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-nm-run-lib.sh fm-decision-hold.sh fm-backend.sh fm-operational-input.sh fm-public-followup-lib.sh fm-secondmate-registry-lib.sh fm-x-lib.sh"
+# the old bin/ too or `. "$SCRIPT_DIR/fm-backend.sh"` aborts under set -eu.
+# The dispatcher and the tmux adapter are BOTH extracted from BASE_REF, and as
+# one pair: conformance tests retain the exact historical behavior even when
+# this branch changes tmux dispatch semantics, and a branch that moves a rule
+# between the two files cannot leave the old bin/ calling an adapter function
+# its own historical adapter never defined.
+OLD_BIN_UNCHANGED_SIBLINGS="fm-gate-refuse-lib.sh fm-guard.sh fm-lock-lib.sh fm-session-lock-lib.sh fm-tasks-axi-lib.sh fm-pr-lib.sh fm-tangle-lib.sh fm-tmux-lib.sh fm-composer-lib.sh fm-wake-lib.sh fm-classify-lib.sh fm-supervision-lib.sh fm-ff-lib.sh fm-config-inherit-lib.sh fm-project-mode.sh fm-harness.sh fm-crew-state.sh fm-nm-run-lib.sh fm-decision-hold.sh fm-operational-input.sh fm-public-followup-lib.sh fm-secondmate-registry-lib.sh fm-x-lib.sh"
 # A pull-request merge may add a new main-only dependency that the branch's older baseline does not have yet.
 OLD_BIN_OPTIONAL_SIBLINGS="fm-pending-reply-lib.sh"
-OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh"
+OLD_BIN_REFACTORED="fm-send.sh fm-peek.sh fm-watch.sh fm-spawn.sh fm-teardown.sh fm-marker-lib.sh fm-backend.sh"
 
 build_old_bin() {  # <name> -> echoes root dir (root/bin/<script> is the entry point)
   local name=$1 root bin f
@@ -665,7 +667,17 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # A real window inventory, because that is how tmux presence is actually
+    # established: `display-message -t <absent>` answers from the current
+    # client's own window and exits 0, so a fake that only stubs it can never
+    # model an absent endpoint.
+    for a in "$@"; do
+      case "$a" in
+        -a) printf 'sess:win\nsess:other\n'; exit 0 ;;
+      esac
+    done
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -682,10 +694,23 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
     "$bin/bin/fm-send.sh" "$@" >/dev/null 2>&1
 }
 
+# Drop the explicit-target verification calls before the old-vs-new diff. The
+# old resolve proved a target with a `display-message` exit code, which proved
+# nothing (tmux answers an absent target from the client's own window); the
+# current one reads the window inventory instead. The rest of the send sequence
+# is still a pure extraction and must stay byte-identical.
 strip_send_preflight() {  # <log>
-  local preflight
+  local preflight inventory
   preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
-  awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
+  inventory=$'tmux\x1flist-windows\x1f-a\x1f-F\x1f#{session_name}:#{window_name}'
+  # The current verification also asks tmux which endpoint it resolved the
+  # target to, which is one display-message carrying several identity fields.
+  awk -v preflight="$preflight" -v inventory="$inventory" '
+    $0 == preflight { next }
+    $0 == inventory { next }
+    index($0, "#{pane_id}") && index($0, "#{window_id}") { next }
+    { print }
+  ' "$1"
 }
 
 test_send_conformance_old_vs_new() {
@@ -702,8 +727,8 @@ test_send_conformance_old_vs_new() {
   run_send_case "$ROOT" "$fb" "$log_new" "$home" -- "sess:win" --key Escape
   rc_new=$?
   expect_code "$rc_old" "$rc_new" "fm-send --key: old vs new exit code"
-  assert_contains "$(cat "$log_new")" $'\x1f''display-message'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''#{pane_id}' \
-    "fm-send --key did not verify the explicit tmux target before sending"
+  assert_contains "$(cat "$log_new")" $'\x1f''list-windows'$'\x1f''-a'$'\x1f''-F'$'\x1f''#{session_name}:#{window_name}' \
+    "fm-send --key did not verify the explicit tmux target against the window inventory before sending"
   strip_send_preflight "$log_old" > "$filtered_old"
   strip_send_preflight "$log_new" > "$filtered_new"
   diff -u "$filtered_old" "$filtered_new" > "$TMP_ROOT/send-diff-key.txt" 2>&1 \

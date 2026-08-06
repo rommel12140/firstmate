@@ -27,8 +27,9 @@ TMP_ROOT=$(fm_test_tmproot fm-send-settle)
 # fake sleep that records every requested duration (one per line) instead of
 # sleeping. send-keys always succeeds; display-message yields a numeric cursor_y;
 # capture-pane returns an empty bordered composer so fm_tmux_composer_state reads
-# "empty" (submit landed) on the first Enter. The sleep log path comes from
-# FM_SLEEP_LOG.
+# "empty" (submit landed) on the first Enter; list-windows carries the target in
+# its inventory, which is how endpoint presence is actually established. The
+# sleep log path comes from FM_SLEEP_LOG.
 make_stubs() {  # <dir> -> echoes fakebin dir
   local dir=$1 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -41,7 +42,7 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows) printf 'sess:win\n'; exit 0 ;;
 esac
 exit 0
 SH
