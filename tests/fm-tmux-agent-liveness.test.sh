@@ -326,8 +326,11 @@ new_window presence-pane "$SLEEP_BIN" 900
   || fail "could not split the pane-qualified presence window"
 pane_index=$("$REAL_TMUX" -L "$SOCKET" list-panes -t "$SESSION:presence-pane" -F '#{pane_index}' | tail -1)
 pane_window_index=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:presence-pane" '#{window_index}')
+pane_window_name=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:presence-pane" '#{window_name}')
 [ -n "$pane_index" ] && [ "$pane_index" != 0 ] && [ -n "$pane_window_index" ] \
   || fail "the split pane never appeared, so the pane-qualified cases would prove nothing"
+[ "$pane_window_name" = presence-pane ] \
+  || fail "the split window is named '$pane_window_name', so the session-less cases below would target the wrong window"
 
 # The same anti-vacuous guard the cases above carry: tmux must still answer an
 # absent pane-qualified target from some OTHER pane, or these assertions stop
@@ -352,6 +355,29 @@ fm_backend_supervisor_target_exists tmux "no-such-session:0.0" \
   && fail "a pane-qualified supervisor target in a nonexistent session must read absent"
 pass "tmux presence: absent pane-qualified supervisor targets read absent"
 
+# The SESSION-LESS pane-qualified forms, `name.pane` and `index.pane`. tmux
+# accepts a bare `main.1` as a target-pane, and the strict primitive carries the
+# session-less bare `#{window_index}` and `#{window_name}` candidates, so the
+# supervisor variant must carry their pane-qualified counterparts or a live
+# operator-typed `main.1` reads absent and fm-supervise-daemon.sh hard-exits.
+raw_bare_pane_readback=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$pane_window_name.99" \
+  '#{window_name}.#{pane_index}' 2>/dev/null) \
+  || fail "display-message failed for an absent session-less pane-qualified target, so the fallback is not live in this tmux"
+[ "$raw_bare_pane_readback" != "$pane_window_name.99" ] \
+  || fail "display-message did not fall back for an absent session-less pane (read back '$raw_bare_pane_readback')"
+
+fm_backend_supervisor_target_exists tmux "$pane_window_name.$pane_index" \
+  || fail "a live session-less name.pane supervisor target must read present"
+fm_backend_supervisor_target_exists tmux "$pane_window_index.$pane_index" \
+  || fail "a live session-less index.pane supervisor target must read present"
+pass "tmux presence: live session-less pane-qualified supervisor targets read present"
+
+fm_backend_supervisor_target_exists tmux "$pane_window_name.99" \
+  && fail "an absent pane in a live window must read absent through the session-less form too"
+fm_backend_supervisor_target_exists tmux "no-such-window.0" \
+  && fail "a session-less pane-qualified target naming an absent window must read absent"
+pass "tmux presence: absent session-less pane-qualified supervisor targets read absent"
+
 # The supervisor variant must not leak into the recorded-endpoint primitive. The
 # strict read judges the same live pane-qualified targets absent, because for a
 # RECORDED endpoint `sess:A.B` can only mean the window named `A.B`.
@@ -359,6 +385,10 @@ fm_backend_target_exists tmux "$SESSION:presence-pane.$pane_index" \
   && fail "the recorded-endpoint read must not accept a pane-qualified target"
 fm_backend_target_exists tmux "$SESSION:$pane_window_index.$pane_index" \
   && fail "the recorded-endpoint read must not accept a session:index.pane target"
+fm_backend_target_exists tmux "$pane_window_name.$pane_index" \
+  && fail "the recorded-endpoint read must not accept a session-less name.pane target"
+fm_backend_target_exists tmux "$pane_window_index.$pane_index" \
+  && fail "the recorded-endpoint read must not accept a session-less index.pane target"
 pass "tmux presence: the recorded-endpoint read rejects pane-qualified targets the supervisor read accepts"
 
 # The false alive that pane-qualified matching re-opens for recorded endpoints.

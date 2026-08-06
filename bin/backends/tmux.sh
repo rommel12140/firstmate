@@ -249,8 +249,9 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # firstmate uses keeps working: a `%pane-id` from `$TMUX_PANE`, a `@window-id`,
 # the `session:index` supervisor-pane default, `session:name`, and a bare name.
 #
-# The enumeration deliberately stops there. It does NOT carry the pane-qualified
-# `session:index.pane` and `session:name.pane` forms, because tmux splits a
+# The enumeration deliberately stops there. It carries NO pane-qualified form -
+# not `session:index.pane`, not `session:name.pane`, and not their session-less
+# `index.pane` and `name.pane` counterparts - because tmux splits a
 # target at its LAST dot and firstmate window names may contain dots
 # (bin/fm-backend.sh's task-id charset permits `.`, and this repo's own
 # fixtures use names like `2.1.221`). Composing `#{session_name}:#{window_name}.#{pane_index}`
@@ -316,8 +317,9 @@ EOF
 
 # fm_backend_tmux_supervisor_target_exists: presence for a target a HUMAN typed,
 # not one firstmate recorded. Reached only through bin/fm-backend.sh's
-# fm_backend_supervisor_target_exists, whose sole caller is
-# bin/fm-supervise-daemon.sh's FM_SUPERVISOR_TARGET startup validation.
+# fm_backend_supervisor_target_exists, whose callers are
+# bin/fm-supervise-daemon.sh's three FM_SUPERVISOR_TARGET reads: the startup
+# validation, the injection guard, and the pane-gone guard.
 #
 # It answers a different question than fm_backend_tmux_target_exists above, which
 # is why it is a separate entry point rather than a flag on the shared one.
@@ -328,7 +330,19 @@ EOF
 # daemon can drive", and docs/configuration.md documents that variable as an
 # unrestricted tmux target - so a pane-qualified form the strict enumeration
 # omits must not read absent, because fm-supervise-daemon.sh turns a false
-# absent into a hard startup exit.
+# absent into a hard startup exit and a false absent at the two runtime guards
+# leaves every escalation undelivered.
+#
+# All four pane-qualified readings are carried, session-qualified and
+# session-less, by index and by name, because tmux accepts a bare `main.1` or
+# `0.1` as a target-pane just as it accepts `sess:main.1`. The strict primitive
+# above carries the session-less bare `#{window_index}` and `#{window_name}`
+# candidates, so omitting their pane-qualified counterparts here would leave the
+# operator-typed enumeration asymmetric and report a live `main.1` absent. The
+# asymmetry that remains is deliberate and runs the other way: the strict
+# primitive carries NO pane-qualified candidate at all, because dot-splitting
+# ambiguity only harms recorded endpoints, whose names may legitimately contain
+# a dot.
 #
 # Only the operator-typed reading is added, and only after the strict primitive
 # has already declined: presence is still established by comparing the identity
@@ -336,7 +350,7 @@ EOF
 # Widening stays confined here, so no recorded-endpoint caller can reach it.
 fm_backend_tmux_supervisor_target_exists() {  # <target>
   local target=$1 resolved candidate
-  local pane_id sess_index_pane sess_name_pane
+  local pane_id sess_index_pane sess_name_pane index_pane name_pane
   [ -n "$target" ] || return 1
 
   fm_backend_tmux_target_exists "$target" && return 0
@@ -345,15 +359,15 @@ fm_backend_tmux_supervisor_target_exists() {  # <target>
   # in the strict primitive cannot answer them, so identity comparison is the
   # whole check here.
   resolved=$(tmux display-message -p -t "$target" \
-    '#{pane_id}	#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}' \
+    '#{pane_id}	#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}	#{window_index}.#{pane_index}	#{window_name}.#{pane_index}' \
     2>/dev/null) || return 1
-  IFS=$'\t' read -r pane_id sess_index_pane sess_name_pane <<EOF
+  IFS=$'\t' read -r pane_id sess_index_pane sess_name_pane index_pane name_pane <<EOF
 $resolved
 EOF
   # Same guard as the strict primitive: no pane id means nothing resolved, so
   # the composed fields would be punctuation rather than an identity.
   [ -n "$pane_id" ] || return 1
-  for candidate in "$sess_index_pane" "$sess_name_pane"; do
+  for candidate in "$sess_index_pane" "$sess_name_pane" "$index_pane" "$name_pane"; do
     [ -n "$candidate" ] && [ "$candidate" = "$target" ] && return 0
   done
   return 1
