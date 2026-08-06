@@ -248,11 +248,20 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # requested) without reimplementing tmux's selector rules, so every target form
 # firstmate uses keeps working: a `%pane-id` from `$TMUX_PANE`, a `@window-id`,
 # the `session:index` supervisor-pane default, `session:name`, and a bare name.
-# The pane-qualified `session:index.pane` and `session:name.pane` forms are
-# carried too: firstmate never composes one itself, but docs/configuration.md
-# documents FM_SUPERVISOR_TARGET as an unrestricted tmux target, and a target
-# form this list omits reads absent - which bin/fm-supervise-daemon.sh turns
-# into a hard startup exit and bin/fm-send.sh into a refusal.
+#
+# The enumeration deliberately stops there. It does NOT carry the pane-qualified
+# `session:index.pane` and `session:name.pane` forms, because tmux splits a
+# target at its LAST dot and firstmate window names may contain dots
+# (bin/fm-backend.sh's task-id charset permits `.`, and this repo's own
+# fixtures use names like `2.1.221`). Composing `#{session_name}:#{window_name}.#{pane_index}`
+# would therefore let a recorded target `sess:fm-7.0` be satisfied by a
+# DIFFERENT live endpoint - window `fm-7` pane 0 - after the window actually
+# recorded as `fm-7.0` is gone, which is exactly the false-alive this function
+# exists to eliminate. `sess:A.B` is genuinely ambiguous between a window named
+# `A.B` and window `A` pane `B`, and every caller of this primitive judges a
+# RECORDED endpoint, where the window-name reading is the only one that can be
+# meant. The pane reading is reachable only through
+# fm_backend_tmux_supervisor_target_exists below.
 #
 # A target that does not match falls through to a literal window inventory,
 # which is the same evidence fm_backend_tmux_agent_state requires. That second
@@ -260,10 +269,7 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 # digit-shaped window name as an index and reports a LIVE window absent, and a
 # false absence is what licenses relaunching onto live work. Neither read can
 # invent presence - one compares resolved identity, the other compares recorded
-# text - so consulting both only ever recovers a true endpoint. The inventory
-# is window-granular, so a pane-qualified target is answered by the identity
-# read alone; tmux splits such a target at its LAST dot, so the window half is
-# still matched by name and never mis-read as an index.
+# text - so consulting both only ever recovers a true endpoint.
 #
 # A failed read means the server or session is gone, which IS "does not exist"
 # for this purpose - the boolean contract fm_backend_target_exists already
@@ -271,24 +277,21 @@ fm_backend_tmux_foreground_argv0s() {  # <target>
 fm_backend_tmux_target_exists() {  # <target>
   local target=$1 resolved inventory line candidate
   local pane_id window_id sess_index sess_name window_index window_name
-  local sess_index_pane sess_name_pane
   [ -n "$target" ] || return 1
 
   # Tab-separated so a window name containing the separator is the only way to
   # confuse this, which no firstmate-generated name does.
   resolved=$(tmux display-message -p -t "$target" \
-    '#{pane_id}	#{window_id}	#{session_name}:#{window_index}	#{session_name}:#{window_name}	#{window_index}	#{window_name}	#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}' \
+    '#{pane_id}	#{window_id}	#{session_name}:#{window_index}	#{session_name}:#{window_name}	#{window_index}	#{window_name}' \
     2>/dev/null) || resolved=''
-  IFS=$'\t' read -r pane_id window_id sess_index sess_name window_index window_name \
-    sess_index_pane sess_name_pane <<EOF
+  IFS=$'\t' read -r pane_id window_id sess_index sess_name window_index window_name <<EOF
 $resolved
 EOF
   # An empty pane id means the command resolved nothing at all (a session that
   # is gone answers with empty fields), so the composed fields below would be
   # punctuation rather than an identity.
   if [ -n "$pane_id" ]; then
-    for candidate in "$pane_id" "$window_id" "$sess_index" "$sess_name" "$window_index" "$window_name" \
-      "$sess_index_pane" "$sess_name_pane"; do
+    for candidate in "$pane_id" "$window_id" "$sess_index" "$sess_name" "$window_index" "$window_name"; do
       [ -n "$candidate" ] && [ "$candidate" = "$target" ] && return 0
     done
   fi
@@ -309,6 +312,51 @@ EOF
       return 1
       ;;
   esac
+}
+
+# fm_backend_tmux_supervisor_target_exists: presence for a target a HUMAN typed,
+# not one firstmate recorded. Reached only through bin/fm-backend.sh's
+# fm_backend_supervisor_target_exists, whose sole caller is
+# bin/fm-supervise-daemon.sh's FM_SUPERVISOR_TARGET startup validation.
+#
+# It answers a different question than fm_backend_tmux_target_exists above, which
+# is why it is a separate entry point rather than a flag on the shared one.
+# For a recorded endpoint the question is "is the exact window I recorded still
+# there", so the ambiguous `sess:A.B` must read as the window NAMED `A.B` and a
+# pane-qualified match would be a false alive. For FM_SUPERVISOR_TARGET the
+# question is "will tmux resolve what the operator typed to a real endpoint this
+# daemon can drive", and docs/configuration.md documents that variable as an
+# unrestricted tmux target - so a pane-qualified form the strict enumeration
+# omits must not read absent, because fm-supervise-daemon.sh turns a false
+# absent into a hard startup exit.
+#
+# Only the operator-typed reading is added, and only after the strict primitive
+# has already declined: presence is still established by comparing the identity
+# tmux resolved to against the target asked for, never by an exit code.
+# Widening stays confined here, so no recorded-endpoint caller can reach it.
+fm_backend_tmux_supervisor_target_exists() {  # <target>
+  local target=$1 resolved candidate
+  local pane_id sess_index_pane sess_name_pane
+  [ -n "$target" ] || return 1
+
+  fm_backend_tmux_target_exists "$target" && return 0
+
+  # Only the pane-qualified forms remain to try. The window-granular inventory
+  # in the strict primitive cannot answer them, so identity comparison is the
+  # whole check here.
+  resolved=$(tmux display-message -p -t "$target" \
+    '#{pane_id}	#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}' \
+    2>/dev/null) || return 1
+  IFS=$'\t' read -r pane_id sess_index_pane sess_name_pane <<EOF
+$resolved
+EOF
+  # Same guard as the strict primitive: no pane id means nothing resolved, so
+  # the composed fields would be punctuation rather than an identity.
+  [ -n "$pane_id" ] || return 1
+  for candidate in "$sess_index_pane" "$sess_name_pane"; do
+    [ -n "$candidate" ] && [ "$candidate" = "$target" ] && return 0
+  done
+  return 1
 }
 
 # fm_backend_tmux_agent_state: recovery-grade harness-agent state for one

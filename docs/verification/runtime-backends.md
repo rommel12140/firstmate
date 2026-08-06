@@ -159,10 +159,35 @@ sess:2.1.221         (exit 0)
 
 `display-message` answered an absent target from the attached client's own active window and still exited 0, so an exit-code read of it can never report an absent endpoint.
 Its reported value stays usable, because tmux names the endpoint it actually resolved to, and an absent target resolves to some other endpoint whose identity cannot equal the one requested.
-That is why the presence read asks for the resolved pane id, window id, `session:index`, `session:name`, index, name, `session:index.pane`, and `session:name.pane`, and requires one to equal the target: it covers every target form firstmate uses, including the `%pane-id` the away-mode daemon takes from `$TMUX_PANE` and its `firstmate:0` `session:index` default, without reimplementing tmux's selector rules.
+That is why the presence read asks for the resolved pane id, window id, `session:index`, `session:name`, index, and name, and requires one to equal the target: it covers every target form firstmate records, including the `%pane-id` the away-mode daemon takes from `$TMUX_PANE` and its `firstmate:0` `session:index` default, without reimplementing tmux's selector rules.
 
-The two pane-qualified forms are carried because `FM_SUPERVISOR_TARGET` is documented as an unrestricted tmux target, and a target form the identity list omits reads absent, which `bin/fm-supervise-daemon.sh` turns into a hard startup exit.
-The same fallback was measured for them on 2026-08-05 with the same tmux build, on a private socket holding one window `win` with two panes and no attached client.
+That enumeration deliberately excludes the pane-qualified `session:index.pane` and `session:name.pane` forms, because composing them re-opens the same false alive for any recorded window whose name contains a dot, which firstmate task ids permit.
+Measured on 2026-08-06 with tmux 3.7b on macOS 26.3 arm64, on a private socket holding windows `fm-dot` and `other` and no window named `fm-dot.0`.
+
+```sh
+tmux -L fmnarrow list-windows -a -F '#{session_name}:#{window_name}'
+tmux -L fmnarrow display-message -p -t sess:fm-dot.0 '#{session_name}:#{window_name}	#{session_name}:#{window_name}.#{pane_index}'
+tmux -L fmnarrow display-message -p -t sess:fm-dot.9 '#{session_name}:#{window_name}.#{pane_index}'
+```
+
+Observed output and exit codes, one block per command above:
+
+```text
+sess:fm-dot
+sess:other           (exit 0)
+sess:fm-dot	sess:fm-dot.0   (exit 0)
+sess:fm-dot.0        (exit 0)
+```
+
+tmux split the target at its last dot and resolved `sess:fm-dot.0` to the live window `fm-dot`, pane 0, even though no window carries that name.
+The composed `#{session_name}:#{window_name}.#{pane_index}` then equalled the requested target exactly, so a pane-qualified candidate in the shared list would report a gone endpoint present - the precise false alive this read exists to eliminate.
+`#{session_name}:#{window_name}` stayed `sess:fm-dot`, which differs from the target, so the recorded-endpoint enumeration reports it absent as required.
+`sess:A.B` is genuinely ambiguous between a window named `A.B` and window `A` pane `B`, and every caller of the recorded-endpoint read means the window-name reading.
+
+Only `FM_SUPERVISOR_TARGET` can carry the pane reading, because `docs/configuration.md` documents it as an unrestricted tmux target and `bin/fm-supervise-daemon.sh` turns a false absent into a hard startup exit.
+It therefore validates through a separate entry point, `fm_backend_supervisor_target_exists`, which tries the strict read first and only then compares the two pane-qualified identities.
+That variant asks a different question - whether what an operator typed resolves to a real endpoint the daemon can drive - so the widening stays out of every recorded-endpoint caller.
+The fallback holds for those forms too, measured on 2026-08-05 with the same tmux build on a private socket holding one window `win` with two panes and no attached client.
 
 ```sh
 tmux -L fmevid display-message -p -t sess:win.1 '#{session_name}:#{window_index}.#{pane_index}	#{session_name}:#{window_name}.#{pane_index}'
@@ -178,8 +203,8 @@ sess:win.1           (exit 0)
 sess:win.1           (exit 0)
 ```
 
-An absent pane and an absent window both answered from the active pane and still exited 0, and both reported an identity that differs from the target asked for, so the same comparison that contains the window-form fallback contains this one.
-tmux splits a pane-qualified target at its last dot, so the window half is matched by name and is not re-read as an index; the window inventory stays window-granular and these forms are answered by the identity read alone.
+An absent pane and an absent window both answered from the active pane and still exited 0, and both reported an identity that differs from the target asked for, so identity comparison contains this fallback as well.
+The window inventory stays window-granular, so these forms are answered by the identity read alone.
 
 Selector matching cannot replace that check in either direction.
 The `=name` exact-match form rejected the absent `fm-ghost`, but it also rejected the live `2.1.221`, because tmux reads a digit-shaped window name as an index rather than a name.
@@ -187,6 +212,7 @@ A plain selector fails the other way: `list-panes -t sess:fm-a` exits 0 against 
 The literal `list-windows -a` inventory answered every name-form case correctly, so it backs the identity check for the digit-shaped case that tmux's own resolution loses.
 
 The regression that pins this is `tests/fm-tmux-agent-liveness.test.sh`, which holds a real attached client from a second private tmux server and asserts the fallback is still live before each presence case, so a tmux release that changed the fallback cannot turn those cases into silent passes.
+It also asserts the divergence between the two entry points directly: the same live pane-qualified target reads present through the supervisor variant and absent through the recorded-endpoint read, and the dotted-name case first proves tmux really does resolve `sess:fm-dot.0` pane-wise before requiring that read to report it absent.
 
 ### Cleanup endpoint identity
 

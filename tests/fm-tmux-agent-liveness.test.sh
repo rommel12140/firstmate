@@ -316,11 +316,11 @@ fm_backend_target_exists tmux "no-such-session:0" \
   && fail "a session:index target in a nonexistent session must read absent"
 pass "tmux presence: absent pane-id, window-id, and session:index targets read absent"
 
-# The pane-qualified `session:window.pane` forms. firstmate never composes one,
-# but docs/configuration.md documents FM_SUPERVISOR_TARGET as an unrestricted
-# tmux target, and a false absent is the dangerous direction here:
-# fm-supervise-daemon.sh hard-exits at startup on it and fm-send.sh refuses the
-# target outright.
+# The pane-qualified `session:window.pane` forms, which the two presence entry
+# points answer DIFFERENTLY on purpose. firstmate never records one, so the
+# recorded-endpoint primitive must reject it; docs/configuration.md documents
+# FM_SUPERVISOR_TARGET as an unrestricted tmux target, so the supervisor variant
+# must accept it rather than let fm-supervise-daemon.sh hard-exit at startup.
 new_window presence-pane "$SLEEP_BIN" 900
 "$REAL_TMUX" -L "$SOCKET" split-window -d -t "$SESSION:presence-pane" -c "$LAB/wt" -- "$SLEEP_BIN" 900 \
   || fail "could not split the pane-qualified presence window"
@@ -338,19 +338,50 @@ raw_pane_readback=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:pr
 [ "$raw_pane_readback" != "$SESSION:presence-pane.99" ] \
   || fail "display-message did not fall back for an absent pane (read back '$raw_pane_readback')"
 
-fm_backend_target_exists tmux "$SESSION:presence-pane.$pane_index" \
-  || fail "a live session:name.pane target must read present"
-fm_backend_target_exists tmux "$SESSION:$pane_window_index.$pane_index" \
-  || fail "a live session:index.pane target must read present"
-pass "tmux presence: live session:name.pane and session:index.pane targets read present"
+fm_backend_supervisor_target_exists tmux "$SESSION:presence-pane.$pane_index" \
+  || fail "a live session:name.pane supervisor target must read present"
+fm_backend_supervisor_target_exists tmux "$SESSION:$pane_window_index.$pane_index" \
+  || fail "a live session:index.pane supervisor target must read present"
+pass "tmux presence: live pane-qualified supervisor targets read present"
 
-fm_backend_target_exists tmux "$SESSION:presence-pane.99" \
+fm_backend_supervisor_target_exists tmux "$SESSION:presence-pane.99" \
   && fail "an absent pane in a live window must read absent, not inherit the window's live pane"
-fm_backend_target_exists tmux "$SESSION:no-such-window.0" \
-  && fail "a pane-qualified target naming an absent window must read absent"
-fm_backend_target_exists tmux "no-such-session:0.0" \
-  && fail "a pane-qualified target in a nonexistent session must read absent"
-pass "tmux presence: absent pane-qualified targets read absent"
+fm_backend_supervisor_target_exists tmux "$SESSION:no-such-window.0" \
+  && fail "a pane-qualified supervisor target naming an absent window must read absent"
+fm_backend_supervisor_target_exists tmux "no-such-session:0.0" \
+  && fail "a pane-qualified supervisor target in a nonexistent session must read absent"
+pass "tmux presence: absent pane-qualified supervisor targets read absent"
+
+# The supervisor variant must not leak into the recorded-endpoint primitive. The
+# strict read judges the same live pane-qualified targets absent, because for a
+# RECORDED endpoint `sess:A.B` can only mean the window named `A.B`.
+fm_backend_target_exists tmux "$SESSION:presence-pane.$pane_index" \
+  && fail "the recorded-endpoint read must not accept a pane-qualified target"
+fm_backend_target_exists tmux "$SESSION:$pane_window_index.$pane_index" \
+  && fail "the recorded-endpoint read must not accept a session:index.pane target"
+pass "tmux presence: the recorded-endpoint read rejects pane-qualified targets the supervisor read accepts"
+
+# The false alive that pane-qualified matching re-opens for recorded endpoints.
+# firstmate task ids permit `.` (see bin/fm-backend.sh's charset), so a recorded
+# window may legitimately be NAMED fm-dot.0 - and tmux splits a target at its
+# LAST dot, resolving that exact string to the DIFFERENT live window fm-dot,
+# pane 0. Nothing here is named fm-dot.0, so a present verdict is a dead
+# endpoint reading as alive.
+new_window fm-dot "$SLEEP_BIN" 900
+dot_pane_readback=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t "$SESSION:fm-dot.0" \
+  '#{session_name}:#{window_name}.#{pane_index}' 2>/dev/null) \
+  || fail "display-message failed for the dotted-name target, so the false-alive case is not live in this tmux"
+[ "$dot_pane_readback" = "$SESSION:fm-dot.0" ] \
+  || fail "tmux did not resolve '$SESSION:fm-dot.0' pane-wise (read back '$dot_pane_readback'), so this case would prove nothing"
+"$REAL_TMUX" -L "$SOCKET" list-windows -a -F '#{session_name}:#{window_name}' \
+  | LC_ALL=C grep -Fqx -- "$SESSION:fm-dot.0" \
+  && fail "a window really is named fm-dot.0, so this case would assert the wrong thing"
+
+fm_backend_target_exists tmux "$SESSION:fm-dot.0" \
+  && fail "a recorded dotted-name endpoint that is gone must read absent, not inherit window fm-dot pane 0"
+fm_backend_target_exists tmux "$SESSION:fm-dot" \
+  || fail "the live window the dotted target resolves to is not present, so the case above would prove nothing"
+pass "tmux presence: a gone dotted-name recorded endpoint reads absent even though tmux resolves it pane-wise"
 
 # A ghost target that is a strict prefix of a live window name. tmux target
 # selectors match by pattern and substring, so a selector-based probe reports
