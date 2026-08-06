@@ -53,6 +53,7 @@ That is the trigger condition for loading the skill, plus any safety-critical fa
 Everything else - the procedure, the mechanism, the surrounding detail - moves out completely.
 Do not leave a partial restatement behind "just in case".
 A partial copy is exactly the duplication the one-owner rule forbids.
+One class of sentence is not yours to move: `docs/safety-surface-manifest.json` pins the safety sentences that must stay in `AGENTS.md` word for word, `bin/fm-safety-surface-check.sh` fails CI when one of them leaves, and `CONTRIBUTING.md`'s repo conventions own what to do about it.
 The model to copy is `AGENTS.md` section 8's "Away-mode stub": it keeps only the marker format, the ownership-transfer rule, and the exit condition inline, and points everything else at the `/afk` skill.
 
 ## Size discipline
