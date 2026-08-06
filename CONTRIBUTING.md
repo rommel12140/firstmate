@@ -50,6 +50,9 @@ See the [no-mistakes quick start](https://kunchenguid.github.io/no-mistakes/star
 - Harness-adapter ownership spans detection in `bin/fm-harness.sh`, launch and hook mechanics in `bin/fm-spawn.sh`, semantic busy sources and trust gates in `bin/fm-busy-lib.sh`, delivery-only rendered guards in `bin/fm-tmux-lib.sh`, cleanup in `bin/fm-teardown.sh`, and facts in `.agents/skills/harness-adapters/SKILL.md`; the `firstmate-coding-guidelines` skill owns the validation policy for checks that depend on those harnesses.
 - Changes to runtime session backends (`bin/fm-backend.sh`, `bin/backends/`, and the scripts that dispatch through them) keep current setup and limits in the relevant backend guide and active empirical evidence in [`docs/verification/runtime-backends.md`](docs/verification/runtime-backends.md).
 - [`docs/documentation-audiences.md`](docs/documentation-audiences.md) and its machine-consumed inventory own prose classification; run `bin/fm-doc-audience-check.sh` after documentation changes.
+- `docs/safety-surface-manifest.json` lists the safety sentences that must stay in `AGENTS.md` word for word; `bin/fm-safety-surface-check.sh` proves they are still there and CI runs it on every pull request.
+  Editing one of those sentences means updating the manifest in the same change, and moving one out of `AGENTS.md` is a decision for the captain, not a manifest edit.
+  The manifest's `enforcement` block is the coverage floor: dropping a guarded rule fails the check until that block is edited too, so shrinking the guarantee is always a visible change rather than a quiet deletion.
 - In Markdown, put each full sentence on its own line.
 - `README.md` stays a concise overview plus pointers: it never carries a wall of inline detail.
   Route detail to the most specific `docs/` file (architecture, configuration, or a backend guide) and link to it instead.
@@ -83,6 +86,7 @@ bin/fm-test-run.sh --check-coverage   # prove portable shards + serial + serial 
 bin/fm-test-run.sh --all   # deliberate complete regression (optional local full walk; not no-mistakes Test)
 bin/fm-test-isolation-proof.sh --list   # proven parallel candidate set (Phase 2 owner)
 bin/fm-test-isolation-proof.sh --jobs 4 --json /tmp/fm-isolation-proof.json   # re-run concurrent isolation proof only
+bin/fm-safety-surface-check.sh   # prove every manifest safety sentence is still verbatim in AGENTS.md (CI runs the same command)
 [ "$(readlink CLAUDE.md)" = "AGENTS.md" ]
 [ "$(readlink .claude/skills)" = "../.agents/skills" ]
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
