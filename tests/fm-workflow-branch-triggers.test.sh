@@ -46,22 +46,41 @@ def indent_of(line):
     return len(line) - len(line.lstrip(" "))
 
 
+def is_filler(line):
+    """Blank lines and comments carry no structure, so they set no indent."""
+    return not line.strip() or line.lstrip(" ").startswith("#")
+
+
+def child_indent(body):
+    """The indent a block's own entries share, or None when it has none."""
+    indents = [indent_of(line) for line in body if not is_filler(line)]
+    return min(indents) if indents else None
+
+
 def block(lines, key, at_indent):
     """Lines under `key:` at `at_indent`, up to the next sibling or dedent."""
     for index, line in enumerate(lines):
-        if line.lstrip(" ").startswith("#") or not line.strip():
+        if is_filler(line):
             continue
         if indent_of(line) != at_indent:
             continue
         stripped = line.strip()
         if stripped == f"{key}:" or stripped.startswith(f"{key}: "):
             body = []
+            pending = []
             for following in lines[index + 1:]:
-                if not following.strip() or following.lstrip(" ").startswith("#"):
-                    body.append(following)
+                if is_filler(following):
+                    pending.append(following)
                     continue
-                if indent_of(following) <= at_indent:
+                following_indent = indent_of(following)
+                if following_indent < at_indent:
                     break
+                # A block sequence may sit at its own key's indent, so only a
+                # non-item line at that indent is the next sibling key.
+                if following_indent == at_indent and not following.strip().startswith("- "):
+                    break
+                body.extend(pending)
+                pending = []
                 body.append(following)
             return stripped, body
     return None, None
@@ -119,12 +138,16 @@ _, on_body = block(lines, "on", 0)
 if on_body is None:
     sys.exit(f"{workflow}: no top-level 'on:' trigger block")
 
-event_indent = min(indent_of(line) for line in on_body if line.strip())
+event_indent = child_indent(on_body)
+if event_indent is None:
+    sys.exit(f"{workflow}: 'on:' declares no triggers")
+
 _, event_body = block(on_body, event, event_indent)
 if event_body is None:
     sys.exit(f"{workflow}: 'on:' has no '{event}:' trigger")
 
-patterns = branch_filter(event_body, event_indent + 2)
+filter_indent = child_indent(event_body)
+patterns = branch_filter(event_body, filter_indent) if filter_indent is not None else None
 if not patterns:
     sys.exit(f"{workflow}: '{event}:' declares no branch filter")
 

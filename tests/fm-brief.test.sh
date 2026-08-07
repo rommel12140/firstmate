@@ -391,14 +391,17 @@ test_review_checkpoint_policy_is_pipeline_only() {
 
   id="brief-checkpoint-e2"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --land "$LAND_FIXTURE" >/dev/null 2>&1
+  assert_present "$home/data/$id/brief.md" "direct-PR brief was not scaffolded"
   assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
     "direct-PR brief must not carry a review-checkpoint policy it never reaches"
   id="brief-checkpoint-e3"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+  assert_present "$home/data/$id/brief.md" "local-only brief was not scaffolded"
   assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
     "local-only brief must not carry a review-checkpoint policy it never reaches"
   id="brief-checkpoint-e4"
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_present "$home/data/$id/brief.md" "scout brief was not scaffolded"
   assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
     "scout brief must not carry a review-checkpoint policy it never reaches"
   pass "fm-brief.sh: the review-checkpoint selection policy renders only in the pipeline DOD"
