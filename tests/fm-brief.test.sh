@@ -367,6 +367,43 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+# Every finding a worker selects at a review checkpoint buys a fixer pass plus a
+# complete re-review, so the pipeline definition of done bounds that selection to
+# error-grade findings and to whatever the decision authority names. The policy
+# belongs to the pipeline only: the other scaffolds have no review checkpoint, so
+# rendering it there would be instructions for a step that never happens.
+test_review_checkpoint_policy_is_pipeline_only() {
+  local home id brief
+  home="$TMP_ROOT/review-checkpoint-home"
+  mkdir -p "$home/data"
+  id="brief-checkpoint-e1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-mistakes brief was not scaffolded"
+  assert_grep "select for in-run fixing only findings the reviewer graded error" "$brief" \
+    "no-mistakes DOD lost the error-grade selection bound"
+  assert_grep "plus any finding the decision authority explicitly directs you to fix" "$brief" \
+    "no-mistakes DOD lost the decision-authority exception to the selection bound"
+  assert_grep "Do not select warning or info findings; list them in your final report as follow-up candidates instead." "$brief" \
+    "no-mistakes DOD lost the follow-up routing for warning and info findings"
+  assert_grep "Ask-user findings keep their normal decision path and are never self-answered." "$brief" \
+    "no-mistakes DOD lost the ask-user reinforcement at the checkpoint"
+
+  id="brief-checkpoint-e2"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --land "$LAND_FIXTURE" >/dev/null 2>&1
+  assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
+    "direct-PR brief must not carry a review-checkpoint policy it never reaches"
+  id="brief-checkpoint-e3"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+  assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
+    "local-only brief must not carry a review-checkpoint policy it never reaches"
+  id="brief-checkpoint-e4"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1
+  assert_no_grep "select for in-run fixing only findings the reviewer graded error" "$home/data/$id/brief.md" \
+    "scout brief must not carry a review-checkpoint policy it never reaches"
+  pass "fm-brief.sh: the review-checkpoint selection policy renders only in the pipeline DOD"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -996,6 +1033,7 @@ test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_review_checkpoint_policy_is_pipeline_only
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

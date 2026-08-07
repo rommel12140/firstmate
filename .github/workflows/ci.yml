@@ -1,10 +1,15 @@
 name: CI
 
+# Pull requests aimed at a batch/ branch run this suite too. Small tasks land on
+# an open batch/YYYY-MM-DD branch and the full validation pipeline runs once on
+# the batch head, so without this those merges would get no mechanical checking
+# between batches. The signature gate in no-mistakes-required.yml stays main-only
+# on purpose: that is what keeps batch landings exempt from it.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'batch/**']
 
 permissions:
   contents: read
