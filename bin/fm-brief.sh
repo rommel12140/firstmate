@@ -37,6 +37,11 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
+# The no-mistakes definition of done also carries the review-checkpoint selection
+# policy: only findings the reviewer graded error, plus any the decision authority
+# names, are fixed in-run, while warning and info findings become follow-up
+# candidates in the worker's final report. Each in-run selection buys a fixer pass
+# and a full re-review, which measured at about a third of all pipeline spend.
 # The generated ship brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
@@ -495,6 +500,10 @@ Answer once per gate: when a gate parks several findings, gather every pending d
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` and \`# Scope\` sections plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
+
+At a review checkpoint, select for in-run fixing only findings the reviewer graded error, plus any finding the decision authority explicitly directs you to fix.
+Do not select warning or info findings; list them in your final report as follow-up candidates instead.
+Ask-user findings keep their normal decision path and are never self-answered.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate (rule 6) and stop.
