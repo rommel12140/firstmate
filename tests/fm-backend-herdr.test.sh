@@ -80,7 +80,12 @@ SH
 # agent_status (set via fake_herdr_set_agent_status, never through a CLI
 # call - mirrors an out-of-band agent registering itself) or an
 # agent_not_found error when none was preset (verified real-herdr behavior for
-# a pane with no registered agent). Every call is logged to $FM_HERDR_LOG in
+# a pane with no registered agent); `pane get` reports FM_FAKE_PANE_PATH as the
+# live `.foreground_cwd` when that variable is set, which is what lets the real
+# bin/fm-spawn.sh run to completion against this fake; `pane rename` succeeds
+# unless FM_FAKE_HERDR_RENAME_EXIT asks it to fail and never touches agent
+# state; and `agent rename` REGISTERS an agent for the pane, the real behaviour
+# that makes it unusable for naming. Every call is logged to $FM_HERDR_LOG in
 # the same unit-separated form as make_herdr_fakebin.
 make_herdr_statefake() {  # <dir> -> echoes fakebin dir; seeds an empty state file
   local dir=$1 fb="$1/fakebin"
@@ -156,6 +161,32 @@ case "$cmd $sub" in
     else
       printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "$pane"
     fi
+    ;;
+  "pane get")
+    # Only answered when the caller opts in with FM_FAKE_PANE_PATH, so cases
+    # that predate the spawn harness keep the previous silent-default
+    # behaviour. Mirrors the verified real field: fm-spawn's worktree-detection
+    # poll reads .foreground_cwd (the live process), never the frozen .cwd.
+    if [ -n "${FM_FAKE_PANE_PATH:-}" ]; then
+      printf '{"result":{"pane":{"foreground_cwd":"%s"}}}\n' "$FM_FAKE_PANE_PATH"
+    fi
+    ;;
+  "pane rename")
+    # A pane property. Deliberately does NOT touch .agent_status, mirroring the
+    # verified real behaviour that keeps husk classification intact.
+    # FM_FAKE_HERDR_RENAME_EXIT simulates a rename the server refuses, which
+    # must cost a label and never a spawn.
+    exit "${FM_FAKE_HERDR_RENAME_EXIT:-0}"
+    ;;
+  "agent rename")
+    # Models the real herdr behaviour proved by CI against herdr 0.7.4: naming
+    # through the AGENT surface REGISTERS an agent for that pane, and the
+    # registration outlives the live agent across a session restart, so the pane
+    # can never again be classified an agent-free husk. Modeled here so any
+    # future switch back to `agent rename` fails a portable test instead of
+    # waiting for the real-herdr lane.
+    pane=${3:-}
+    jq_state --arg p "$pane" '.agent_status[$p] = (.agent_status[$p] // "idle")' | save
     ;;
   *) : ;;
 esac
@@ -2623,6 +2654,128 @@ test_send_key_normalizes_and_targets_pane() {
   pass "fm_backend_herdr_send_key: normalizes the key and targets the right pane"
 }
 
+# --- name_endpoint (distinct per-worker identity in herdr's pane view) -------
+#
+# `agent rename` sets more fields and is nonetheless the WRONG call: verified
+# against a real herdr 0.7.4, naming through the agent surface registers an
+# agent for the pane, and that registration outlives the live agent across a
+# session restart. fm_backend_herdr_pane_agent_state reports `no-agent` only on
+# an `agent_not_found` error, so an agent-named pane can never be classified a
+# husk again, breaking restored-husk replacement, projection reclaim, and
+# dead-secondmate relaunch. `pane rename` writes a pane property and leaves the
+# agent registry alone. That distinction is the whole safety story here, so it
+# is pinned in both directions rather than left to a comment.
+
+test_name_endpoint_uses_pane_rename_not_agent_rename() {
+  local dir log resp fb
+  dir="$TMP_ROOT/name-endpoint"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint default:w1:p2 ship:fm-alpha-a1' "$ROOT"
+  expect_code 0 $? "name_endpoint should succeed"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p2'$'\x1f''ship:fm-alpha-a1' \
+    "name_endpoint did not call 'pane rename <pane> <name>' on the right pane"
+  assert_not_contains "$(cat "$log")" $'\x1f''agent'$'\x1f''rename' \
+    "name_endpoint used 'agent rename', which registers an agent and permanently breaks husk classification for that pane"
+  assert_contains "$(cat "$log")" $'\x1f''--session'$'\x1f''default' \
+    "name_endpoint did not route through the session-scoped CLI helper"
+  pass "fm_backend_herdr_name_endpoint: names the pane with 'pane rename', never the husk-poisoning 'agent rename'"
+}
+
+# The regression CI caught: after naming, an agent-free pane must STILL classify
+# as a husk. The stateful fake models `agent rename`'s real registering
+# behaviour, so this fails if the naming call ever moves to the agent surface.
+test_name_endpoint_leaves_husk_classification_intact() {
+  local dir log state fb before after
+  dir="$TMP_ROOT/name-husk"; mkdir -p "$dir"; log="$dir/log"; state="$dir/state.json"; : > "$log"
+  fb=$(make_herdr_statefake "$dir")
+  before=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    bash -c '. "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_pane_presence_state() { printf present; }
+      fm_backend_herdr_pane_agent_state fmtest w1:p2' "$ROOT" )
+  [ "$before" = no-agent ] || fail "fixture precondition: an unregistered pane should read no-agent, got '$before'"
+
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint fmtest:w1:p2 ship:fm-alpha-a1' "$ROOT"
+  expect_code 0 $? "name_endpoint should succeed against the stateful fake"
+
+  after=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    bash -c '. "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_pane_presence_state() { printf present; }
+      fm_backend_herdr_pane_agent_state fmtest w1:p2' "$ROOT" )
+  [ "$after" = no-agent ] \
+    || fail "naming registered an agent: the pane now reads '$after', so restored-husk replacement, projection reclaim, and dead-secondmate relaunch would all refuse"
+  pass "fm_backend_herdr_name_endpoint: naming leaves an agent-free pane classifiable as a husk"
+}
+
+# The name must never reach the agent: it is a control-socket call on the pane
+# OBJECT. Any of pane run / send-text / send-keys would type into the terminal
+# and land in the agent's composer, which is exactly the token cost this
+# feature is required to avoid.
+test_name_endpoint_never_types_into_the_pane() {
+  local dir log resp fb logged
+  dir="$TMP_ROOT/name-no-typing"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint default:w1:p2 scout:fm-alpha-a1' "$ROOT"
+  expect_code 0 $? "name_endpoint should succeed"
+  logged=$(cat "$log")
+  assert_not_contains "$logged" $'\x1f''pane'$'\x1f''run' \
+    "name_endpoint typed a command into the pane; anything typed enters the agent's context and costs model tokens"
+  assert_not_contains "$logged" $'\x1f''pane'$'\x1f''send-text' \
+    "name_endpoint sent text into the pane; anything typed enters the agent's context and costs model tokens"
+  assert_not_contains "$logged" $'\x1f''pane'$'\x1f''send-keys' \
+    "name_endpoint sent keys into the pane; anything typed enters the agent's context and costs model tokens"
+  pass "fm_backend_herdr_name_endpoint: names through the control socket only, never by typing into the pane"
+}
+
+test_name_endpoint_preserves_rename_failure() {
+  local dir log resp fb status
+  dir="$TMP_ROOT/name-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  # 1 is the server-ensure `status --json` the fakebin answers itself; the
+  # rename is the next scripted call, and it fails.
+  printf '1\n' > "$resp/1.exit"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint default:w1:p2 ship:fm-alpha-a1' "$ROOT" 2>/dev/null
+  status=$?
+  [ "$status" -ne 0 ] || fail "name_endpoint should report a failed rename to its caller"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p2' \
+    "name_endpoint did not attempt the rename before failing"
+  pass "fm_backend_herdr_name_endpoint: reports a failed rename rather than swallowing it"
+}
+
+# `pane rename` takes `--clear` in the name position, so a leading-dash string
+# reaching herdr would risk CLEARING the label instead of setting it. Refuse
+# before the CLI is touched at all.
+test_name_endpoint_refuses_empty_and_flag_shaped_names() {
+  local dir log resp fb status name
+  dir="$TMP_ROOT/name-refuse"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"
+  fb=$(make_herdr_fakebin "$dir")
+  for name in '' '--clear' '-x'; do
+    : > "$log"
+    PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint default:w1:p2 "$1"' "$ROOT" "$name" 2>/dev/null
+    status=$?
+    [ "$status" -ne 0 ] || fail "name_endpoint should refuse the name '$name'"
+    [ ! -s "$log" ] || fail "name_endpoint called herdr at all for the refused name '$name'"$'\n'"$(cat "$log")"
+  done
+  pass "fm_backend_herdr_name_endpoint: refuses empty and flag-shaped names without calling herdr"
+}
+
+test_name_endpoint_refuses_malformed_target() {
+  local dir log resp fb status
+  dir="$TMP_ROOT/name-bad-target"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_name_endpoint nosession ship:fm-alpha-a1' "$ROOT" 2>/dev/null
+  status=$?
+  [ "$status" -ne 0 ] || fail "name_endpoint should refuse a target with no session:pane shape"
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename' \
+    "name_endpoint tried to rename against an unparseable target"
+  pass "fm_backend_herdr_name_endpoint: refuses a malformed target without renaming anything"
+}
+
 test_kill_is_best_effort() {
   local dir log resp fb
   dir="$TMP_ROOT/kill"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -2655,6 +2808,244 @@ test_current_path_reads_cwd() {
   [ "$out" = "/tmp/fake-worktree" ] || fail "current_path should read foreground_cwd (the live process), not the frozen creation-time cwd, got '$out'"
   assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''get'$'\x1f''w1:p2' "current_path did not call pane get"
   pass "fm_backend_herdr_current_path: reads pane foreground_cwd (the live running process), not the frozen creation-time cwd"
+}
+
+# --- spawn wiring: every launched worker gets its own name -------------------
+#
+# The adapter cases above pin the CALL; these pin the WIRING, by driving the
+# real bin/fm-spawn.sh end to end against the stateful fake herdr and a real
+# isolated git worktree. Nothing below models the naming logic itself, so a
+# spawn that silently stopped naming its worker fails here.
+
+# make_herdr_spawn_world: one self-contained spawn fixture - a firstmate home,
+# a real git project with a real worktree for `treehouse get` to land in, a
+# brief, and the stateful fake herdr. Echoes
+# "<home>|<project>|<worktree>|<fakebin>|<herdr-log>|<state-file>".
+make_herdr_spawn_world() {  # <name>
+  local name=$1 dir home proj wt fb log state
+  dir="$TMP_ROOT/spawn-$name"
+  home="$dir/home"; proj="$dir/project"; wt="$dir/wt"
+  log="$dir/herdr.log"; state="$dir/state.json"
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  printf 'claude\n' > "$home/config/crew-harness"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  touch "$home/state/.last-watcher-beat"
+  fm_git_worktree "$proj" "$wt" "wt-$name"
+  fb=$(make_herdr_statefake "$dir")
+  fm_fake_exit0 "$fb" treehouse
+  : > "$log"
+  printf '%s|%s|%s|%s|%s|%s\n' "$home" "$proj" "$wt" "$fb" "$log" "$state"
+}
+
+# herdr_spawn_seed_brief: fm-spawn refuses without one, and each id needs its own.
+herdr_spawn_seed_brief() {  # <home> <task-id>
+  mkdir -p "$1/data/$2"
+  printf 'brief for %s\n' "$2" > "$1/data/$2/brief.md"
+}
+
+# run_herdr_spawn: the real bin/fm-spawn.sh on the herdr backend.
+# `env -u HERDR_*` matters: a Herdr pane identity inherited from the developer's
+# own terminal would send fm-spawn looking for a launcher this fake never models.
+run_herdr_spawn() {  # <home> <worktree> <fakebin> <herdr-log> <state-file> <spawn args...>
+  local home=$1 wt=$2 fb=$3 log=$4 state=$5
+  shift 5
+  env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
+    FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=herdr FM_FAKE_PANE_PATH="$wt" \
+    FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    FM_FAKE_HERDR_RENAME_EXIT="${FM_FAKE_HERDR_RENAME_EXIT:-0}" \
+    PATH="$fb:$PATH" \
+    "$ROOT/bin/fm-spawn.sh" "$@" 2>&1
+}
+
+# fm-spawn hardcodes TASK_TMP=/tmp/fm-<id>, outside the fixture root, so each
+# spawn case removes its own.
+herdr_spawn_drop_tasktmp() {  # <task-id>...
+  local id
+  for id in "$@"; do
+    [ -n "$id" ] || continue
+    rm -rf "/tmp/fm-$id"
+  done
+}
+
+# The name has to say WHICH worker and WHAT it is for, so ship and scout of the
+# same shape must not read alike. The pane's terminal title already carries the
+# task description; the name carries identity and role.
+test_spawn_names_each_worker_by_kind_and_task_id() {
+  local world home proj wt fb log state out status
+  world=$(make_herdr_spawn_world by-kind)
+  IFS='|' read -r home proj wt fb log state <<EOF
+$world
+EOF
+  herdr_spawn_seed_brief "$home" nameship-k1
+  herdr_spawn_seed_brief "$home" namescout-k2
+
+  out=$(run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    nameship-k1 "$proj" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "a herdr ship spawn should succeed"$'\n'"$out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p3'$'\x1f''ship:nameship-k1' \
+    "the spawned ship worker was not named '<kind>:<task-id>' on its own pane"
+
+  : > "$log"
+  out=$(run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    namescout-k2 "$proj" --scout)
+  status=$?
+  expect_code 0 "$status" "a herdr scout spawn should succeed"$'\n'"$out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p4'$'\x1f''scout:namescout-k2' \
+    "the spawned scout worker was not named with its own kind and task id"
+  assert_not_contains "$(cat "$log")" 'ship:' \
+    "the scout spawn reused the previous worker's role in its name"
+
+  herdr_spawn_drop_tasktmp nameship-k1 namescout-k2
+  pass "fm-spawn (herdr): names each worker '<kind>:<task-id>' on its own pane"
+}
+
+# Two workers live at once is the case the captain actually looks at, so the
+# names must separate them from each other AND from the launcher's own pane.
+test_spawn_names_concurrent_workers_distinctly() {
+  local world home proj wt fb log state out status names
+  world=$(make_herdr_spawn_world concurrent)
+  IFS='|' read -r home proj wt fb log state <<EOF
+$world
+EOF
+  herdr_spawn_seed_brief "$home" concur-c1
+  herdr_spawn_seed_brief "$home" concur-c2
+
+  out=$(run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    concur-c1 "$proj" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "the first concurrent spawn should succeed"$'\n'"$out"
+  out=$(run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    concur-c2 "$proj" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "the second concurrent spawn should succeed"$'\n'"$out"
+
+  names=$(tr '\037' '\n' < "$log" | grep -c '^ship:concur-c[12]$')
+  [ "$names" = 2 ] || fail "both concurrent workers should have been named, saw $names"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p3'$'\x1f''ship:concur-c1' \
+    "the first concurrent worker was not named on its own pane"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p4'$'\x1f''ship:concur-c2' \
+    "the second concurrent worker was not named on its own pane"
+  # The workspace this home's workers live in stays labeled "firstmate"; only
+  # the workers themselves take a task name, so the launcher pane the captain
+  # already recognizes is never renamed out from under them.
+  assert_not_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p2' \
+    "a spawn renamed the workspace's own seeded pane instead of the worker's"
+
+  herdr_spawn_drop_tasktmp concur-c1 concur-c2
+  pass "fm-spawn (herdr): two concurrent workers get two different names, and the launcher's pane keeps its own"
+}
+
+# The worker is already launched and reading its brief by the time the name is
+# set. A refused rename must therefore cost the label and nothing else.
+test_spawn_survives_a_refused_rename() {
+  local world home proj wt fb log state out status
+  world=$(make_herdr_spawn_world rename-refused)
+  IFS='|' read -r home proj wt fb log state <<EOF
+$world
+EOF
+  herdr_spawn_seed_brief "$home" refused-r1
+
+  out=$(FM_FAKE_HERDR_RENAME_EXIT=1 run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    refused-r1 "$proj" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "a refused rename must not fail the spawn"$'\n'"$out"
+  assert_contains "$out" "spawned refused-r1" \
+    "a refused rename suppressed the spawn's own success report"
+  assert_contains "$out" "could not name the herdr endpoint for refused-r1" \
+    "a refused rename passed silently instead of warning"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p3' \
+    "the spawn did not attempt the rename at all"
+  [ -s "$home/state/refused-r1.meta" ] \
+    || fail "a refused rename left the task without its durable record"
+  assert_contains "$(cat "$home/state/refused-r1.meta")" "window=default:w1:p3" \
+    "a refused rename corrupted the recorded endpoint"
+
+  herdr_spawn_drop_tasktmp refused-r1
+  pass "fm-spawn (herdr): a refused rename warns and leaves the spawn complete"
+}
+
+# A batch re-execs fm-spawn per id=repo pair, so each pair must carry its OWN
+# name rather than the batch's first or last.
+test_spawn_names_every_worker_in_a_batch() {
+  local world home proj wt fb log state out status
+  world=$(make_herdr_spawn_world batch)
+  IFS='|' read -r home proj wt fb log state <<EOF
+$world
+EOF
+  herdr_spawn_seed_brief "$home" batchname-b1
+  herdr_spawn_seed_brief "$home" batchname-b2
+
+  out=$(run_herdr_spawn "$home" "$wt" "$fb" "$log" "$state" \
+    "batchname-b1=$proj" "batchname-b2=$proj" --mode direct-PR --yolo off)
+  status=$?
+  expect_code 0 "$status" "a two-pair herdr batch should succeed"$'\n'"$out"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p3'$'\x1f''ship:batchname-b1' \
+    "the batch's first worker was not named with its own task id"
+  assert_contains "$(cat "$log")" $'\x1f''pane'$'\x1f''rename'$'\x1f''w1:p4'$'\x1f''ship:batchname-b2' \
+    "the batch's second worker was not named with its own task id"
+
+  herdr_spawn_drop_tasktmp batchname-b1 batchname-b2
+  pass "fm-spawn (herdr): every worker in a batch is named with its own task id"
+}
+
+# Naming is scoped to the herdr adapter. On every other backend the spawn path
+# must be exactly what it was: no naming call, no new failure mode. tmux stands
+# in for that set because it is the reference backend and the only one whose
+# binary this suite can fake without an optional dependency.
+test_spawn_on_another_backend_issues_no_naming_call() {
+  local world home proj wt fb log state tmuxlog out status
+  world=$(make_herdr_spawn_world other-backend)
+  IFS='|' read -r home proj wt fb log state <<EOF
+$world
+EOF
+  herdr_spawn_seed_brief "$home" othback-o1
+  tmuxlog="$TMP_ROOT/spawn-other-backend/tmux.log"
+  : > "$tmuxlog"
+  # A recording fake tmux that answers the two reads fm-spawn makes of it, next
+  # to the fake herdr on the same PATH: if the naming path were not scoped to
+  # herdr, one of the two logs would show it.
+  cat > "$fb/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+{ printf 'tmux'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; } >> "${FM_TMUX_LOG:?}"
+case "${1:-}" in
+  display-message)
+    for a in "$@"; do
+      case "$a" in *pane_current_path*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;; esac
+    done
+    printf 'firstmate\n'; exit 0 ;;
+  new-window) printf '@spawnwid\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/tmux"
+
+  out=$(env -u HERDR_ENV -u HERDR_PANE_ID -u HERDR_SESSION -u HERDR_SOCKET_PATH \
+    FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux TMUX="fake,1,0" FM_FAKE_PANE_PATH="$wt" \
+    FM_TMUX_LOG="$tmuxlog" FM_HERDR_LOG="$log" FM_FAKE_HERDR_STATE="$state" \
+    PATH="$fb:$PATH" \
+    "$ROOT/bin/fm-spawn.sh" othback-o1 "$proj" --mode direct-PR --yolo off 2>&1)
+  status=$?
+  expect_code 0 "$status" "the tmux spawn should still succeed"$'\n'"$out"
+  assert_contains "$out" "spawned othback-o1" "the tmux spawn stopped reporting success"
+  [ ! -s "$log" ] \
+    || fail "a tmux spawn reached the herdr adapter"$'\n'"$(cat "$log")"
+  assert_not_contains "$(cat "$tmuxlog")" "rename-window" \
+    "the tmux spawn path gained a naming call it never used to make"
+  assert_not_contains "$out" "could not name the" \
+    "a non-herdr spawn reported a naming failure for a name it should never set"
+
+  rm -f "$fb/tmux"
+  herdr_spawn_drop_tasktmp othback-o1
+  pass "fm-spawn (tmux): naming is scoped to herdr, so another backend's spawn path is untouched"
 }
 
 # --- busy_state (semantic agent state) ---------------------------------------
@@ -4019,6 +4410,17 @@ test_capture_calls_pane_read
 test_capture_works_around_small_lines_bug
 test_capture_preserves_pane_read_failure
 test_send_key_normalizes_and_targets_pane
+test_name_endpoint_uses_pane_rename_not_agent_rename
+test_name_endpoint_leaves_husk_classification_intact
+test_name_endpoint_never_types_into_the_pane
+test_name_endpoint_preserves_rename_failure
+test_name_endpoint_refuses_empty_and_flag_shaped_names
+test_name_endpoint_refuses_malformed_target
+test_spawn_names_each_worker_by_kind_and_task_id
+test_spawn_names_concurrent_workers_distinctly
+test_spawn_survives_a_refused_rename
+test_spawn_names_every_worker_in_a_batch
+test_spawn_on_another_backend_issues_no_naming_call
 test_kill_is_best_effort
 test_current_path_reads_cwd
 test_busy_state_working_maps_to_busy
