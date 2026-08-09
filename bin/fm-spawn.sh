@@ -1734,6 +1734,19 @@ spawn_send_key() {  # <target> <key>
     cmux) fm_backend_cmux_send_key "$1" "$2" "$W" ;;
   esac
 }
+# spawn_name_endpoint: label the launched endpoint with this task's identity in
+# the backend's own UI. herdr is the only supported backend with a native
+# per-endpoint name surface AND no other name of its own on a spawned worker
+# (its agent/pane views showed a bare "claude" for every worker); tmux, zellij,
+# cmux, and orca already carry fm-<id> as the window/tab/terminal name the
+# operator sees, so there is nothing to add and this is a deliberate silent
+# no-op for them rather than an error. Adding a backend here is one case arm.
+spawn_name_endpoint() {  # <target> <name>
+  case "$BACKEND" in
+    herdr) fm_backend_herdr_name_endpoint "$1" "$2" ;;
+    *) return 0 ;;
+  esac
+}
 
 kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
@@ -2284,6 +2297,21 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
   fi
 fi
 
+# Name the endpoint last, once the worker is launched and the task's durable
+# record is already published. "<kind>:<task-id>" is unique across the fleet,
+# stable for the whole life of the task, sorts sensibly, and says what the
+# worker is FOR at a glance; the endpoint's own terminal title already carries
+# the task description, so the name carries identity and role instead of
+# repeating it. Purely a display label - it is written through the backend's
+# control channel, never into the pane, so it costs no model tokens and no
+# harness ever sees it.
+#
+# A failure here warns and continues on purpose. The worker is already running
+# the brief by this point, nothing resolves a task by this name, and losing a
+# cosmetic label must never cost a spawn.
+if ! spawn_name_endpoint "$T" "$KIND:$ID"; then
+  echo "warning: could not name the $BACKEND endpoint for $ID; the worker is running normally but shows no distinct name" >&2
+fi
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"

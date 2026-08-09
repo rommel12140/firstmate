@@ -2363,6 +2363,43 @@ fm_backend_herdr_send_key() {  # <target> <key>
   fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane send-keys "$FM_BACKEND_HERDR_PANE" "$key" >/dev/null 2>&1
 }
 
+# fm_backend_herdr_name_endpoint: give a task's pane a distinct, role-carrying
+# identity in herdr's own agent and pane views, so a captain watching several
+# workers sees who is who instead of three interchangeable "claude" rows.
+#
+# `agent rename`, NOT `pane rename`. Verified live against herdr 0.7.4 on
+# 2026-08-10 (docs/herdr-backend.md "Endpoint naming"): `agent rename` sets
+# BOTH `agent list`'s .name AND `pane list`'s .label in one call, while `pane
+# rename` sets only .label and leaves `agent list`'s .name null. Only the
+# superset reproduces the .label+.name shape the launcher's own pane already
+# carries, so only it makes the worker identifiable in every view the captain
+# can open.
+#
+# Zero model tokens by construction: this is a control-socket call against the
+# pane OBJECT, never `pane run`, `pane send-text`, or `pane send-keys`. Nothing
+# is typed into the terminal and nothing reaches the agent's composer, so no
+# harness ever reads a byte of it.
+#
+# Cosmetic only, and deliberately so. Nothing reads the name back as identity:
+# firstmate resolves every herdr endpoint by pane id or by TAB label
+# (fm_backend_herdr_resolve_bare_selector, fm_backend_herdr_list_live), and
+# every pane-list consumer here reads only pane_id/tab_id/workspace_id. A
+# missing, stale, or human-edited name therefore cannot misroute a task, which
+# is why callers are free to treat a failure as a lost label rather than a lost
+# spawn.
+#
+# An empty name, or one shaped like an option, is refused without calling
+# herdr: `agent rename` takes `--clear` in the same position, so passing a
+# leading-dash string through would risk CLEARING the name instead of setting
+# it. Real names are "<kind>:<task-id>" and can never take that shape.
+fm_backend_herdr_name_endpoint() {  # <target> <name>
+  case "${2-}" in
+    ''|-*) return 1 ;;
+  esac
+  fm_backend_herdr_target_ready "$1" || return 1
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent rename "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+}
+
 # fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors
 # fm-peek.sh's/fm-watch.sh's `tmux capture-pane -p -t T -S -N`. --source recent
 # is the closest herdr analogue to tmux's scrollback-bounded capture.

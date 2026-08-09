@@ -188,6 +188,32 @@ A Herdr pane id contains a colon, so the adapter splits `window=` on the first c
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
 
+## Endpoint naming
+
+Herdr keeps a per-endpoint display name that its own agent and pane views show.
+A spawned worker has none of its own, so before this behavior existed every worker listed under its harness name alone and workers were indistinguishable from each other in those views.
+
+After a successful spawn, the adapter names the worker's pane `<kind>:<task-id>`, giving `ship:<id>`, `scout:<id>`, or `secondmate:<id>`.
+The name is unique per task, stable for the whole life of that task, and states the worker's role; the endpoint's terminal title already carries the task description.
+
+`herdr agent rename` is the call that sets it, not `herdr pane rename`.
+Verified against Herdr 0.7.4 on 2026-08-10: `agent rename` sets both `agent list`'s `name` and `pane list`'s `label`, while `pane rename` sets only `label` and leaves `agent list`'s `name` unset.
+Only the first reproduces the shape a launcher pane already has, so only it makes the worker identifiable in every view.
+
+The name is display-only and is never read back as identity.
+Endpoints resolve by pane id or by tab label, so a missing, stale, or hand-edited name cannot misroute a task.
+Naming therefore runs after the worker is already launched, and a failed rename warns and leaves the spawn complete rather than costing a task.
+
+Naming reaches the pane object over the control socket and never types into the terminal, so it adds nothing to any agent's context.
+
+Every task tab and its root pane are created fresh, and teardown closes the pane and refuses to retire the task's durable record until that exact pane reports gone.
+No pane is pooled or reused between tasks, so a name cannot survive into a later task and there is nothing to clear at teardown.
+
+Other backends are unaffected: each already carries `fm-<id>` as the window, tab, or terminal name an operator sees, so naming is scoped to this adapter and is a silent no-op elsewhere.
+
+Naming applies to locally routed endpoints only.
+A remote secondmate's pane lives on another host's Herdr server, which the local client does not address, and that launch path returns before naming runs.
+
 ## Current transport behavior
 
 The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
