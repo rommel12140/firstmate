@@ -360,17 +360,34 @@ test_a_filled_real_scaffold_dispatches() {
 $rec
 EOF
 
-  for kind in ship scout; do
-    if [ "$kind" = ship ]; then
-      FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
-        "$ROOT/bin/fm-brief.sh" "real-$kind" app --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1 \
-        || fail "$kind: the real scaffold did not generate"
-    else
-      FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
-        "$ROOT/bin/fm-brief.sh" "real-$kind" app --scout >/dev/null 2>&1 \
-        || fail "$kind: the real scaffold did not generate"
-    fi
+  # A planning brief is a scout brief carrying the navigator's charter, so it
+  # dispatches through --scout and is checked here for the same {TASK} slot. Its
+  # charter is prose about plans and decisions, which is exactly the kind of text a
+  # sloppier check could mistake for an unfilled slot.
+  for kind in ship scout plan; do
+    case "$kind" in
+      ship)
+        FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
+          "$ROOT/bin/fm-brief.sh" "real-$kind" app --mode no-mistakes --land "$LAND_FIXTURE" >/dev/null 2>&1 \
+          || fail "$kind: the real scaffold did not generate" ;;
+      scout)
+        FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
+          "$ROOT/bin/fm-brief.sh" "real-$kind" app --scout >/dev/null 2>&1 \
+          || fail "$kind: the real scaffold did not generate" ;;
+      plan)
+        FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_STATE_OVERRIDE="$home/state" \
+          "$ROOT/bin/fm-brief.sh" "real-$kind" app --plan >/dev/null 2>&1 \
+          || fail "$kind: the real scaffold did not generate" ;;
+    esac
     brief="$home/data/real-$kind/brief.md"
+
+    # Unfilled, the same scaffold must refuse, so the filled result below proves the
+    # check ran rather than that it never fires on this kind of brief.
+    if [ "$kind" = plan ]; then
+      out=$(run_spawn "$home" "$fakebin" "real-$kind" "$proj" claude --scout)
+      assert_contains "$out" "still carries unfilled placeholders ({TASK})" \
+        "$kind: a brief still carrying its task slot was dispatched"
+    fi
 
     # Assert the prose mention is really there, so this case cannot go vacuous if
     # that paragraph is ever reworded away.
@@ -393,7 +410,7 @@ EOF
     assert_not_contains "$out" "unfilled placeholders" \
       "$kind: a fully filled real scaffold was refused as a template"
   done
-  pass "fm-spawn: a real scaffold with every slot filled dispatches despite the safety paragraph naming {TASK}"
+  pass "fm-spawn: a real ship, scout, or planning scaffold with every slot filled dispatches despite the safety paragraph naming {TASK}"
 }
 
 # The registry is the captain's standing posture, so dropping below its rigor is
