@@ -2364,40 +2364,53 @@ fm_backend_herdr_send_key() {  # <target> <key>
 }
 
 # fm_backend_herdr_name_endpoint: give a task's pane a distinct, role-carrying
-# identity in herdr's own agent and pane views, so a captain watching several
-# workers sees who is who instead of three interchangeable "claude" rows.
+# label in herdr's pane view, so a captain watching several workers sees who is
+# who instead of a column of interchangeable "claude" rows.
 #
-# `agent rename`, NOT `pane rename`. Verified live against herdr 0.7.4 on
-# 2026-08-10 (docs/herdr-backend.md "Endpoint naming"): `agent rename` sets
-# BOTH `agent list`'s .name AND `pane list`'s .label in one call, while `pane
-# rename` sets only .label and leaves `agent list`'s .name null. Only the
-# superset reproduces the .label+.name shape the launcher's own pane already
-# carries, so only it makes the worker identifiable in every view the captain
-# can open.
+# `pane rename`, NOT `agent rename`, and the reason is a safety property rather
+# than a preference.
 #
-# Zero model tokens by construction: this is a control-socket call against the
-# pane OBJECT, never `pane run`, `pane send-text`, or `pane send-keys`. Nothing
-# is typed into the terminal and nothing reaches the agent's composer, so no
-# harness ever reads a byte of it.
+# `agent rename` looks like the better call and is a trap. Verified live against
+# herdr 0.7.4 on 2026-08-10: it sets BOTH `agent list`'s .name AND `pane list`'s
+# .label in one call, while `pane rename` sets only .label. But naming through
+# the AGENT surface writes a registration into herdr's agent registry, and that
+# registration OUTLIVES the live agent: after a session stop/reprovision, the
+# restored pane still answers `agent get` instead of `agent_not_found`.
+# fm_backend_herdr_pane_agent_state reports `no-agent` on exactly that error, so
+# an agent-named pane can never again be classified a husk. That silently breaks
+# every recovery path built on the classification - create_task's restored-husk
+# replacement, projection reclaim, and the recovery-grade state that decides
+# whether a dead secondmate gets relaunched - turning a cosmetic label into a
+# task that cannot be respawned after a restart.
+# Proven by tests/fm-backend-herdr-presentation-e2e.test.sh's restart fixture,
+# which fails against a real herdr the moment this uses `agent rename`.
 #
-# Cosmetic only, and deliberately so. Nothing reads the name back as identity:
-# firstmate resolves every herdr endpoint by pane id or by TAB label
+# `pane rename` writes a property of the pane OBJECT and never touches the agent
+# registry - confirmed live, where it set .label while leaving `agent list`'s
+# .name null on a pane that already had a registered agent. Husk detection is
+# therefore exactly as it was before naming existed.
+#
+# Zero model tokens by construction: a control-socket call against the pane
+# object, never `pane run`, `pane send-text`, or `pane send-keys`. Nothing is
+# typed into the terminal and nothing reaches the agent's composer.
+#
+# Cosmetic only. Nothing reads the label back as identity: firstmate resolves
+# every herdr endpoint by pane id or by TAB label
 # (fm_backend_herdr_resolve_bare_selector, fm_backend_herdr_list_live), and
 # every pane-list consumer here reads only pane_id/tab_id/workspace_id. A
-# missing, stale, or human-edited name therefore cannot misroute a task, which
-# is why callers are free to treat a failure as a lost label rather than a lost
-# spawn.
+# missing, stale, or human-edited label cannot misroute a task, which is why
+# callers may treat a failure as a lost label rather than a lost spawn.
 #
-# An empty name, or one shaped like an option, is refused without calling
-# herdr: `agent rename` takes `--clear` in the same position, so passing a
-# leading-dash string through would risk CLEARING the name instead of setting
-# it. Real names are "<kind>:<task-id>" and can never take that shape.
+# An empty name, or one shaped like an option, is refused without calling herdr:
+# `pane rename` takes `--clear` in the same position, so a leading-dash string
+# would risk CLEARING the label instead of setting it. Real names are
+# "<kind>:<task-id>" and can never take that shape.
 fm_backend_herdr_name_endpoint() {  # <target> <name>
   case "${2-}" in
     ''|-*) return 1 ;;
   esac
   fm_backend_herdr_target_ready "$1" || return 1
-  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" agent rename "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
+  fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane rename "$FM_BACKEND_HERDR_PANE" "$2" >/dev/null 2>&1
 }
 
 # fm_backend_herdr_capture: bounded plain-text pane capture. Mirrors

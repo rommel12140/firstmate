@@ -190,29 +190,38 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 
 ## Endpoint naming
 
-Herdr keeps a per-endpoint display name that its own agent and pane views show.
-A spawned worker has none of its own, so before this behavior existed every worker listed under its harness name alone and workers were indistinguishable from each other in those views.
+Herdr keeps a per-pane display label that its pane view shows.
+A spawned worker has none of its own, so before this behavior existed every worker listed under its harness name alone and workers were indistinguishable from each other in that view.
 
-After a successful spawn, the adapter names the worker's pane `<kind>:<task-id>`, giving `ship:<id>`, `scout:<id>`, or `secondmate:<id>`.
-The name is unique per task, stable for the whole life of that task, and states the worker's role; the endpoint's terminal title already carries the task description.
+After a successful spawn, the adapter labels the worker's pane `<kind>:<task-id>`, giving `ship:<id>`, `scout:<id>`, or `secondmate:<id>`.
+The label is unique per task, stable for the whole life of that task, and states the worker's role; the endpoint's terminal title already carries the task description.
 
-`herdr agent rename` is the call that sets it, not `herdr pane rename`.
-Verified against Herdr 0.7.4 on 2026-08-10: `agent rename` sets both `agent list`'s `name` and `pane list`'s `label`, while `pane rename` sets only `label` and leaves `agent list`'s `name` unset.
-Only the first reproduces the shape a launcher pane already has, so only it makes the worker identifiable in every view.
+The agent view's separate `name` field stays unset, for the reason below.
 
-The name is display-only and is never read back as identity.
-Endpoints resolve by pane id or by tab label, so a missing, stale, or hand-edited name cannot misroute a task.
-Naming therefore runs after the worker is already launched, and a failed rename warns and leaves the spawn complete rather than costing a task.
+`herdr pane rename` is the call that sets it, and `herdr agent rename` must not be used for naming.
 
-Naming reaches the pane object over the control socket and never types into the terminal, so it adds nothing to any agent's context.
+Verified against Herdr 0.7.4 on 2026-08-10, `agent rename` sets both `agent list`'s `name` and `pane list`'s `label`, while `pane rename` sets only `label`.
+The extra field is not worth what it costs.
+Naming through the agent surface registers an agent for that pane, and the registration outlives the live agent: after a session restart the restored pane answers `agent get` instead of returning `agent_not_found`.
+Husk classification reports `no-agent` on exactly that error, so an agent-named pane can never be classified a husk again.
+That would break restored-husk replacement, presentation reclaim, and the recovery-grade state deciding whether a dead secondmate is relaunched, turning a display label into a task that cannot be respawned after a restart.
+
+`pane rename` writes a property of the pane object and never touches the agent registry, so classification behaves exactly as it did before naming existed.
+The restart fixture in `tests/fm-backend-herdr-presentation-e2e.test.sh` fails against a real Herdr if naming ever moves back to the agent surface, and a portable test pins the same property.
+
+The label is display-only and is never read back as identity.
+Endpoints resolve by pane id or by tab label, so a missing, stale, or hand-edited label cannot misroute a task.
+Labeling therefore runs after the worker is already launched, and a failed rename warns and leaves the spawn complete rather than costing a task.
+
+The rename reaches the pane object over the control socket and never types into the terminal, so it adds nothing to any agent's context.
 
 Every task tab and its root pane are created fresh, and teardown closes the pane and refuses to retire the task's durable record until that exact pane reports gone.
-No pane is pooled or reused between tasks, so a name cannot survive into a later task and there is nothing to clear at teardown.
+No pane is pooled or reused between tasks, so a label cannot survive into a later task and there is nothing to clear at teardown.
 
-Other backends are unaffected: each already carries `fm-<id>` as the window, tab, or terminal name an operator sees, so naming is scoped to this adapter and is a silent no-op elsewhere.
+Other backends are unaffected: each already carries `fm-<id>` as the window, tab, or terminal name an operator sees, so labeling is scoped to this adapter and is a silent no-op elsewhere.
 
-Naming applies to locally routed endpoints only.
-A remote secondmate's pane lives on another host's Herdr server, which the local client does not address, and that launch path returns before naming runs.
+Labeling applies to locally routed endpoints only.
+A remote secondmate's pane lives on another host's Herdr server, which the local client does not address, and that launch path returns before labeling runs.
 
 ## Current transport behavior
 
