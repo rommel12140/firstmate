@@ -22,6 +22,13 @@
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
+# Teardown also REFUSES while any OTHER live task in this home records the same
+# worktree (or the same orca_worktree_id): cleanup returns the one copy both
+# records point at and kills its processes, so it would destroy the other task's
+# work. That refusal covers scouts too, and only --force bypasses it - saying
+# whose copy it is discarding. kind=secondmate is exempt because a secondmate
+# home is provisioned by the secondmate seeding path, never handed out from the
+# shared task pool. bin/fm-worktree-claim-lib.sh owns the scan.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
 # for the common case where there is no remote at all.
@@ -149,6 +156,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-worktree-claim-lib.sh
+. "$SCRIPT_DIR/fm-worktree-claim-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
@@ -1054,6 +1063,36 @@ validate_worktree_teardown_safety() {
       return 1
     fi
   fi
+}
+
+# A worktree two live tasks both record is never safe to clean up: the return
+# below cleans, resets, and hands back the ONE copy both records point at, and
+# the process reap that precedes it kills whatever is running in that copy - so
+# routine cleanup of one task destroys the other task's work
+# (bin/fm-worktree-claim-lib.sh carries the incident this comes from).
+#
+# Unlike the landed-work check above, this one applies to a scout too: a scout
+# worktree is declared scratch only while it is the scout's OWN scratch, and it
+# was a scout that was handed a live task's copy in the incident. It is skipped
+# only for kind=secondmate, whose home is provisioned by the secondmate seeding
+# path and never drawn from the shared task pool, so the pooled-handout
+# collision cannot arise there; its own lifecycle owns that home.
+#
+# --force remains the captain-authorised discard path, and says whose copy it is
+# discarding rather than passing silently.
+refuse_shared_worktree_teardown() {
+  local holders held
+  [ "$KIND" != secondmate ] || return 0
+  holders=$(fm_worktree_claim_holders "$STATE" "$ID" "${WT:-}" "${ORCA_WORKTREE_ID:-}") || return 0
+  held=$(fm_worktree_claim_describe "$holders")
+  if [ "$FORCE" = "--force" ]; then
+    echo "warning: --force is discarding $WT, which $held still records; that task loses this copy too." >&2
+    return 0
+  fi
+  echo "REFUSED: worktree $WT is also recorded by $held." >&2
+  echo "Cleanup returns the one copy both tasks record and kills its processes." >&2
+  echo "Tear down or re-point the other task first (or get the captain's explicit OK to discard both, then --force)." >&2
+  return 1
 }
 
 # Fix 1 (see script header): does the active-or-most-recent no-mistakes run in
@@ -2110,6 +2149,10 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+# Runs before the process reap and every destructive step below, because both
+# would act on a copy another live task still records.
+refuse_shared_worktree_teardown || exit 1
 
 # Every landed/discard-work refusal above has now passed (or --force skipped
 # them). Fix 1 and Fix 2 (see script header) run here, unconditionally on

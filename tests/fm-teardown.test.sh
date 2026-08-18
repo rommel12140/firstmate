@@ -49,6 +49,13 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#
+# And the shared-worktree collision (bin/fm-worktree-claim-lib.sh): a pool slot
+# frees when its lease is released, so two tasks can end up recording the same
+# copy, and returning it for one destroys the other's work.
+#   (z1) another live task records the same worktree            -> REFUSE, nothing returned
+#   (z2) that other task's record is gone                       -> ALLOW
+#   (z3) same collision with --force                            -> ALLOW, names the discarded copy
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -2475,6 +2482,111 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+# Record every treehouse invocation so a refusal can be proved to have stopped
+# before the destructive return, not merely to have printed something.
+add_recording_treehouse() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  : > "$case_dir/treehouse.log"
+}
+
+# A second live task in the same home recording <worktree>. The meta file IS the
+# claim: teardown removes it as the last step of cleanup, so while it exists the
+# task still holds whatever it names.
+write_second_holder_meta() {  # <case-dir> <task-id> <worktree> [kind]
+  local case_dir=$1 id=$2 wt=$3 kind=${4:-scout}
+  fm_write_meta "$case_dir/state/$id.meta" \
+    "window=firstmate:fm-$id" \
+    "endpoint_task_id=$id" \
+    "worktree=$wt" \
+    "project=$case_dir/project" \
+    "kind=$kind" \
+    "mode=no-mistakes"
+}
+
+run_teardown_recording_treehouse() {  # <case-dir> [args...]
+  local case_dir=$1; shift
+  FM_FAKE_TREEHOUSE_LOG="$case_dir/treehouse.log" run_teardown "$case_dir" "$@"
+}
+
+test_shared_worktree_refuses_teardown() {
+  local case_dir rc
+  case_dir=$(make_case shared-worktree-refuse)
+  write_meta "$case_dir" no-mistakes ship
+  add_recording_treehouse "$case_dir"
+  write_second_holder_meta "$case_dir" task-x2 "$case_dir/wt"
+
+  set +e
+  run_teardown_recording_treehouse "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "shared-worktree-refuse: teardown should refuse a copy another task records"
+  assert_grep REFUSED "$case_dir/stderr" "shared-worktree-refuse: no REFUSED line"
+  assert_grep task-x2 "$case_dir/stderr" \
+    "shared-worktree-refuse: the refusal did not name the other task"
+  assert_grep "$case_dir/wt" "$case_dir/stderr" \
+    "shared-worktree-refuse: the refusal did not name the shared worktree"
+  [ ! -s "$case_dir/treehouse.log" ] \
+    || fail "shared-worktree-refuse: teardown reached treehouse: $(cat "$case_dir/treehouse.log")"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "shared-worktree-refuse: the refused teardown still cleared its own record"
+  assert_present "$case_dir/state/task-x2.meta" \
+    "shared-worktree-refuse: the refused teardown disturbed the other task's record"
+  pass "teardown refuses while another live task records the same worktree"
+}
+
+test_shared_worktree_teardown_allowed_once_holder_is_gone() {
+  local case_dir rc
+  case_dir=$(make_case shared-worktree-cleared)
+  write_meta "$case_dir" no-mistakes ship
+  add_recording_treehouse "$case_dir"
+  write_second_holder_meta "$case_dir" task-x2 "$case_dir/wt"
+  # Cleanup of the other task removes its record, which releases the claim.
+  rm -f "$case_dir/state/task-x2.meta"
+
+  set +e
+  run_teardown_recording_treehouse "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "shared-worktree-cleared: teardown should proceed once no other task records the copy"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "shared-worktree-cleared: teardown printed a REFUSED line"
+  assert_grep "return --force" "$case_dir/treehouse.log" \
+    "shared-worktree-cleared: teardown never returned the worktree"
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "shared-worktree-cleared: teardown did not clear its own record"
+  pass "teardown proceeds once the other task's record is gone"
+}
+
+test_shared_worktree_force_discards_and_says_so() {
+  local case_dir rc
+  case_dir=$(make_case shared-worktree-force)
+  write_meta "$case_dir" no-mistakes ship
+  add_recording_treehouse "$case_dir"
+  write_second_holder_meta "$case_dir" task-x2 "$case_dir/wt"
+
+  set +e
+  run_teardown_recording_treehouse "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "shared-worktree-force: --force should carry out the captain-authorised discard"
+  assert_grep task-x2 "$case_dir/stderr" \
+    "shared-worktree-force: --force did not say whose copy it was discarding"
+  assert_grep "$case_dir/wt" "$case_dir/stderr" \
+    "shared-worktree-force: --force did not name the copy it was discarding"
+  assert_grep "return --force" "$case_dir/treehouse.log" \
+    "shared-worktree-force: --force never returned the worktree"
+  pass "--force discards a shared copy but says whose copy it is"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -2531,3 +2643,6 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_shared_worktree_refuses_teardown
+test_shared_worktree_teardown_allowed_once_holder_is_gone
+test_shared_worktree_force_discards_and_says_so

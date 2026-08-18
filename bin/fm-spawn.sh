@@ -119,7 +119,14 @@
 #   Before a secondmate launch, the home is locally fast-forwarded to the primary
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
-#   git worktree root distinct from the primary project checkout.
+#   git worktree root distinct from the primary project checkout, and unless no
+#   OTHER live task in this home already records it. A pool slot frees when its
+#   lease is released, including when a task's harness session merely dies, so
+#   `treehouse get` can hand a live task's copy to a second task; a collision
+#   refuses, hands the copy straight back with a non-forced `treehouse return`,
+#   and exits non-zero rather than quietly taking a different slot. An Orca
+#   spawn gets the same refusal on its recorded orca_worktree_id and leaves the
+#   holder's worktree in place. bin/fm-worktree-claim-lib.sh owns the scan.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -222,6 +229,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
+# shellcheck source=bin/fm-worktree-claim-lib.sh
+. "$SCRIPT_DIR/fm-worktree-claim-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
 # a direct report (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
@@ -1384,6 +1393,51 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
+# validate_spawn_worktree proves the resolved copy is real, is a worktree, and
+# is not the primary checkout. It never asks the second question: is this copy
+# ALREADY somebody else's? A pool slot frees when its lease is released, which
+# includes a task whose harness session merely died, so `treehouse get` can hand
+# a live task's copy to a second task while the first still owns the work in it
+# (bin/fm-worktree-claim-lib.sh carries the incident). Refuse that outright.
+# Taking a different pool slot instead would hide the tangle firstmate has to
+# reconcile; refusing is the honest outcome and firstmate can retry.
+#
+# Called AFTER validate_spawn_worktree, not before: the release below hands the
+# copy back to the pool, and only validate_spawn_worktree proves the resolved
+# path is a genuine pooled worktree rather than the primary checkout, which must
+# never be handed to `treehouse return`.
+refuse_claimed_spawn_worktree() {  # <source> <inspect-target> <release-fn>
+  local source=$1 inspect_target=$2 release=$3 holders held
+  holders=$(fm_worktree_claim_holders "$STATE" "$ID" "${WT:-}" "${ORCA_WORKTREE_ID:-}") || return 0
+  held=$(fm_worktree_claim_describe "$holders")
+  echo "error: $source handed $ID a worktree another live task still holds: $held. Resolved '$WT'; refusing to launch two tasks into one copy. Inspect target $inspect_target" >&2
+  "$release"
+  exit 1
+}
+
+# Hand a just-taken treehouse worktree straight back. Non-forced on purpose:
+# `treehouse return --force` cleans and resets without prompting, and this copy
+# is the other task's work, not ours to discard. stdin comes from /dev/null so a
+# prompting return can never wedge the spawn.
+release_claimed_treehouse_worktree() {
+  if ( cd "$PROJ_ABS" && treehouse return "$WT" ) < /dev/null; then
+    echo "note: returned $WT to the pool; the holding task keeps its record" >&2
+  else
+    echo "warning: could not return $WT to the pool; it stays leased until the holding task is reconciled" >&2
+  fi
+}
+
+# An Orca worktree is created per spawn rather than drawn from a shared pool, so
+# a collision here should be impossible; the check is cheap insurance against a
+# reused handle. Nothing is removed or killed on refusal: a handle another live
+# task already records is not provably ours, and neither is the terminal Orca
+# returned with it, so the whole abort cleanup is disarmed rather than pointed at
+# the holder's resources. A stray terminal on this path is the cheaper mistake.
+release_claimed_orca_worktree() {
+  ORCA_ABORT_CLEANUP=0
+  echo "note: left the Orca worktree and its terminal in place; they belong to the holding task, not to $ID" >&2
+}
+
 herdr_projection_meta_field_exact() {  # <meta> <key>
   local meta=$1 key=$2 count
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -1682,6 +1736,7 @@ EOF
       exit 1
     fi
     validate_spawn_worktree "orca worktree create" "$W"
+    refuse_claimed_spawn_worktree "orca worktree create" "$W" release_claimed_orca_worktree
     if [ -z "$ORCA_TERMINAL" ]; then
       ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
     fi
@@ -1834,6 +1889,7 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+  refuse_claimed_spawn_worktree "treehouse get" "$T" release_claimed_treehouse_worktree
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
