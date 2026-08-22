@@ -63,7 +63,16 @@ case "${1:-}" in
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane) printf '╭────╮\n│    │\n╰────╯\n'; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    # Endpoint presence is read from the window inventory, never from a
+    # display-message exit code: real tmux answers an absent target from the
+    # current client's own window and still exits 0, so a stub that answers only
+    # display-message models every target as live. An empty inventory here means
+    # the opposite - no endpoint exists - so a case that needs a live endpoint
+    # that is deliberately NOT one of this home's tasks names it in
+    # FM_FAKE_WINDOWS.
+    for w in ${FM_FAKE_WINDOWS:-}; do printf '%s\n' "$w"; done
+    exit 0 ;;
 esac
 exit 0
 SH
@@ -477,8 +486,12 @@ test_flag_misuse_refuses() {
   [ "$rc" -ne 0 ] || fail "an empty answer message should refuse"
   assert_contains "$(cat "$err")" "nonempty answer message" "the empty-message refusal should be explicit"
 
-  # An explicit backend target has no task ledger in this home.
+  # An explicit backend target has no task ledger in this home. It has to be a
+  # LIVE endpoint, or the refusal under test never runs: fm-send verifies an
+  # explicit target against the backend before it looks for a ledger, so an
+  # absent one refuses for the wrong reason.
   env PATH="$fb:$PATH" FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
+    FM_FAKE_WINDOWS=sess:elsewhere \
     "$SEND" sess:elsewhere --resolve-key k "answer" >/dev/null 2>"$err"; rc=$?
   [ "$rc" -ne 0 ] || fail "an explicit backend target should refuse --resolve-key"
   assert_contains "$(cat "$err")" "no decision ledger" "the explicit-target refusal should be explicit"

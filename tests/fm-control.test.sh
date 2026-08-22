@@ -128,7 +128,34 @@ case "${1:-}" in
     if [ -f "$D/pane" ]; then cat "$D/pane"; else printf '╭────╮\n│    │\n╰────╯\n'; fi
     exit 0 ;;
   list-windows)
-    if [ -f "$D/windows" ]; then cat "$D/windows"; fi
+    # The windows file is the session-qualified truth, and this projects it onto
+    # whichever format the caller asked for. Two readers ask differently and both
+    # must be answerable from one modelled reality: the recovery-grade classifier
+    # reads `-t <session> -F '#{window_name}'`, while the cheap presence read
+    # reads `-a -F '#{session_name}:#{window_name}'`. A stub that ignored -F could
+    # only ever satisfy one of them, and would answer the other with names it
+    # never asked for.
+    shift
+    lw_session= lw_format=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) lw_session=${2:-}; shift 2 ;;
+        -F) lw_format=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [ -f "$D/windows" ] || exit 0
+    while IFS= read -r lw_line; do
+      [ -n "$lw_line" ] || continue
+      case "$lw_format" in
+        *'#{session_name}:#{window_name}'*) printf '%s\n' "$lw_line" ;;
+        *)
+          # A session-scoped read reports bare window names, and only this
+          # session's.
+          [ -z "$lw_session" ] || [ "${lw_line%%:*}" = "$lw_session" ] || continue
+          printf '%s\n' "${lw_line##*:}" ;;
+      esac
+    done < "$D/windows"
     exit 0 ;;
 esac
 exit 0
@@ -183,7 +210,7 @@ add_task() {
     echo "effort=default"
     [ "$backend" = tmux ] || echo "backend=$backend"
   } > "$home/state/$id.meta"
-  printf '%s\n' "fm-$id" > "$dir/fake/windows"
+  printf '%s\n' "$window" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
 }
 
