@@ -141,7 +141,11 @@ PF_TEMP_FILES=()
 PF_REGISTRY_LOCK_IDS=()
 pf_registry_lock_held() {
   local wanted=$1 held
-  for held in "${PF_REGISTRY_LOCK_IDS[@]}"; do
+  # The ${arr[@]+...} guard keeps stock macOS bash 3.2 from treating an empty
+  # array expansion as an unbound variable under set -u. This is the first
+  # reachable-empty site: the very first pf_registry_lock_acquire asks whether a
+  # lock is already held before anything has ever been appended.
+  for held in ${PF_REGISTRY_LOCK_IDS[@]+"${PF_REGISTRY_LOCK_IDS[@]}"}; do
     [ "$held" = "$wanted" ] && return 0
   done
   return 1
@@ -160,7 +164,11 @@ pf_registry_lock_release() {
   for held in "${PF_REGISTRY_LOCK_IDS[@]}"; do
     [ "$held" = "$id" ] || remaining+=("$held")
   done
-  PF_REGISTRY_LOCK_IDS=("${remaining[@]}")
+  # Same bash 3.2 guard, for the other reachable-empty case: releasing the only
+  # held lock leaves `remaining` empty. The loop above needs no guard because
+  # the pf_registry_lock_held check that precedes it already proved the array
+  # non-empty.
+  PF_REGISTRY_LOCK_IDS=(${remaining[@]+"${remaining[@]}"})
 }
 pf_cleanup() {
   local i
