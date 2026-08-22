@@ -11,9 +11,6 @@
 # source):
 #   (a) active run-step is authoritative                          -> run-step
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
-#   (b2) declared pause outranks INFERRED working, FULL attribution only
-#        -> status-log, while run OUTCOMES (parked/done/checks-green/failed)
-#        still win, and a coarse-attributed run keeps working
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
 #   (d) terminal run-step (passed/failed) is authoritative        -> run-step
 #   (e) cross-branch attribution: this branch's own run found via list lookup
@@ -453,127 +450,6 @@ test_gate_block_parked_not_superseded() {
   assert_contains "$out" "1 finding(s)" "gate block wait includes finding count"
   assert_not_contains "$out" "superseded" "gate block wait not flagged stale"
   pass "gate block parked run is not flagged superseded"
-}
-
-# A declared external-wait pause (paused: <why>) outranks the INFERRED working
-# state of an active run: working only means "a run is active", and a worker
-# deliberately waiting out a known external event (absent CI runners, a rate
-# limit, a long silent step) is exactly the case that inference misreads as a
-# wedge suspect. The pause must NEVER mask a run OUTCOME: a parked gate, a done
-# run (including checks-green), and a failed run still win, and the override is
-# limited to full `axi status` attribution, where those outcomes are visible.
-# These cases pin that precedence in both directions.
-test_declared_pause_outranks_running_run() {
-  reset_fakes
-  local d; d=$(new_case pause-over-running)
-  make_repo_on_branch "$d/wt" fm/feat-pr
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-pr.meta" "window=fm:fm-feat-pr" "worktree=$d/wt" "kind=ship"
-  printf 'working: started\npaused: waiting out the review step, nothing to print\n' > "$d/state/feat-pr.status"
-  FM_FAKE_AXI_STATUS="$(run_running fm/feat-pr)"
-  local out; out=$(run_crew_state "$d" feat-pr)
-  assert_contains "$out" "state: paused" "declared pause over an active running run -> paused"
-  assert_contains "$out" "source: status-log" "declared pause comes from the status log"
-  assert_contains "$out" "waiting out the review step" "pause detail preserves the declared reason"
-  assert_contains "$out" "declared pause outranks active run" "pause detail names the overridden run"
-  assert_not_contains "$out" "state: working" "declared pause is not overruled by an inferred working state"
-  pass "declared pause outranks an active running run"
-}
-
-test_declared_pause_outranks_ci_monitoring_not_green() {
-  reset_fakes
-  local d; d=$(new_case pause-over-ci-wait)
-  make_repo_on_branch "$d/wt" fm/feat-pciw
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-pciw.meta" "window=fm:fm-feat-pciw" "worktree=$d/wt" "kind=ship"
-  printf 'paused: fork Actions cannot obtain a runner, waiting on the account fix\n' > "$d/state/feat-pciw.status"
-  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-pciw)"
-  FM_FAKE_CI_LOGS="no CI checks reported yet, waiting for checks to register..."
-  local out; out=$(run_crew_state "$d" feat-pciw)
-  assert_contains "$out" "state: paused" "declared pause over a not-yet-green ci monitor -> paused"
-  assert_contains "$out" "cannot obtain a runner" "pause detail preserves the declared reason"
-  assert_not_contains "$out" "state: working" "not-yet-green ci monitor must not overrule the declared pause"
-  pass "declared pause outranks a not-yet-green ci-monitoring run"
-}
-
-test_ci_green_outcome_beats_declared_pause() {
-  reset_fakes
-  local d; d=$(new_case ci-green-over-pause)
-  make_repo_on_branch "$d/wt" fm/feat-cgp
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-cgp.meta" "window=fm:fm-feat-cgp" "worktree=$d/wt" "kind=ship"
-  printf 'paused: waiting out CI\n' > "$d/state/feat-cgp.status"
-  FM_FAKE_AXI_STATUS="$(run_ci_monitoring fm/feat-cgp)"
-  FM_FAKE_CI_LOGS="all CI checks passed - still monitoring until merged or closed"
-  local out; out=$(run_crew_state "$d" feat-cgp)
-  assert_contains "$out" "state: done" "checks green while paused -> done, never masked"
-  assert_contains "$out" "checks green" "checks-green detail survives the pause"
-  assert_not_contains "$out" "state: paused" "a green PR must never hide behind a declared pause"
-  pass "checks-green outcome beats a declared pause"
-}
-
-test_parked_gate_beats_declared_pause() {
-  reset_fakes
-  local d; d=$(new_case parked-over-pause)
-  make_repo_on_branch "$d/wt" fm/feat-pgp
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-pgp.meta" "window=fm:fm-feat-pgp" "worktree=$d/wt" "kind=ship"
-  printf 'paused: waiting out validation\n' > "$d/state/feat-pgp.status"
-  FM_FAKE_AXI_STATUS="$(run_parked fm/feat-pgp)"
-  local out; out=$(run_crew_state "$d" feat-pgp)
-  assert_contains "$out" "state: parked" "gate while paused -> parked, never masked"
-  assert_contains "$out" "parked at review" "gate detail survives the pause"
-  assert_not_contains "$out" "state: paused" "a waiting gate must never hide behind a declared pause"
-  pass "a parked gate beats a declared pause"
-}
-
-test_run_outcomes_beat_declared_pause() {
-  reset_fakes
-  local d out
-  d=$(new_case passed-over-pause)
-  make_repo_on_branch "$d/wt" fm/feat-pop
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-pop.meta" "window=fm:fm-feat-pop" "worktree=$d/wt" "kind=ship"
-  printf 'paused: waiting out validation\n' > "$d/state/feat-pop.status"
-  FM_FAKE_AXI_STATUS="$(run_passed fm/feat-pop)"
-  out=$(run_crew_state "$d" feat-pop)
-  assert_contains "$out" "state: done" "passed run while paused -> done, never masked"
-
-  reset_fakes
-  d=$(new_case failed-over-pause)
-  make_repo_on_branch "$d/wt" fm/feat-fop
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-fop.meta" "window=fm:fm-feat-fop" "worktree=$d/wt" "kind=ship"
-  printf 'paused: waiting out validation\n' > "$d/state/feat-fop.status"
-  FM_FAKE_AXI_STATUS="$(run_failed fm/feat-fop)"
-  out=$(run_crew_state "$d" feat-fop)
-  assert_contains "$out" "state: failed" "failed run while paused -> failed, never masked"
-  pass "terminal run outcomes beat a declared pause"
-}
-
-# The override is FULL-attribution only. The coarse runs-list fallback reports
-# just running/completed/failed/cancelled, so a run parked at a gate is
-# indistinguishable there from one still validating: honouring the pause would
-# hide a waiting gate. A coarse-attributed run therefore keeps its working
-# verdict, and with it the pre-change wedge escalation.
-test_coarse_running_run_keeps_working_despite_pause() {
-  reset_fakes
-  local d short; d=$(new_case pause-over-coarse)
-  make_repo_on_branch "$d/wt" fm/feat-pcr
-  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-pcr.meta" "window=fm:fm-feat-pcr" "worktree=$d/wt" "kind=ship"
-  printf 'paused: waiting out a long test step\n' > "$d/state/feat-pcr.status"
-  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
-  FM_FAKE_RUNS_LIST="$(cat <<EOF
-  running    fm/feat-pcr ${short}  2026-08-05 10:00
-EOF
-)"
-  local out; out=$(run_crew_state "$d" feat-pcr)
-  assert_contains "$out" "state: working" "coarse running run keeps working despite a declared pause"
-  assert_contains "$out" "source: run-step" "coarse verdict still comes from the run-step"
-  assert_not_contains "$out" "state: paused" "the pause override must not apply to coarse attribution"
-  pass "coarse-attributed running run keeps working despite a declared pause"
 }
 
 test_ci_ready_done_log_beats_monitoring_run() {
@@ -1285,6 +1161,105 @@ test_torn_down_worktree() {
   pass "torn-down worktree is handled gracefully"
 }
 
+# --- remote secondmate arm ---------------------------------------------------
+# A meta recording remote_host= must never be read through the local worktree
+# probe or a local backend adapter: the recorded worktree and pane live on the
+# remote host, and the old local reads misreported a healthy remote mate as
+# "worktree gone". These cases drive the real helper over the real fm-on.sh
+# route with a stubbed ssh transport (FM_SSH_BIN seam): the stub prints
+# FM_FAKE_REMOTE_STATE_OUT as the remote endpoint's recovery-grade state and
+# exits FM_FAKE_SSH_RC.
+
+setup_remote_case() {  # <name> -> echoes case dir with remote meta + registry
+  local d
+  d=$(new_case "$1")
+  mkdir -p "$d/data" "$d/fakebin"
+  fm_write_meta "$d/state/rsm.meta" \
+    "window=remote:rsm" \
+    "endpoint_task_id=rsm" \
+    "worktree=/remote/home/never-locally-present" \
+    "harness=claude" \
+    "kind=secondmate" \
+    "mode=secondmate" \
+    "remote_host=remote-mac" \
+    "remote_root=/remote/root" \
+    "remote_backend=herdr" \
+    "remote_herdr_session=fm-remote" \
+    "remote_target=fm-remote:w1:p1"
+  cat > "$d/data/secondmates.md" <<EOF
+- rsm - remote test domain (host: remote-mac; root: /remote/root; home: /remote/home; scope: remote testing; projects: alpha; added 2026-08-02)
+EOF
+  cat > "$d/fakebin/fake-ssh" <<'SH'
+#!/usr/bin/env bash
+cat > /dev/null
+[ -z "${FM_FAKE_REMOTE_STATE_OUT:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_STATE_OUT"
+exit "${FM_FAKE_SSH_RC:-0}"
+SH
+  chmod +x "$d/fakebin/fake-ssh"
+  printf '%s\n' "$d"
+}
+
+run_remote_crew_state() {  # <case-dir> <id>
+  PATH="$1/fakebin:$PATH" FM_HOME="$1" FM_STATE_OVERRIDE="$1/state" \
+    FM_SSH_BIN="$1/fakebin/fake-ssh" "$CREW_STATE" "$2"
+}
+
+test_remote_alive_with_log_uses_status_log() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-alive-log)
+  make_fakebin "$d" >/dev/null
+  printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
+  out=$(FM_FAKE_REMOTE_STATE_OUT=alive FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote alive exits 0"
+  assert_contains "$out" "state: working" "alive remote mate with a working log reads working"
+  assert_contains "$out" "source: status-log" "alive remote mate reads current activity from the routed log"
+  assert_contains "$out" "remote endpoint alive on remote-mac" "the remote liveness read should be visible"
+  assert_not_contains "$out" "worktree gone" "a healthy remote mate must never read as torn down"
+  pass "fm-crew-state remote: alive endpoint falls through to the routed status log"
+}
+
+test_remote_alive_idle_is_healthy_not_gone() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-alive-idle)
+  make_fakebin "$d" >/dev/null
+  out=$(FM_FAKE_REMOTE_STATE_OUT=alive FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote alive-idle exits 0"
+  assert_contains "$out" "source: remote-endpoint" "the remote endpoint is the reported source"
+  assert_contains "$out" "alive on remote-mac" "an idle remote mate reads alive"
+  assert_not_contains "$out" "worktree gone" "a healthy remote mate must never read as torn down"
+  assert_not_contains "$out" "backend target gone" "a healthy remote mate must never read as a dead target"
+  pass "fm-crew-state remote: an idle alive endpoint reads alive, never gone or dead"
+}
+
+test_remote_unreachable_is_unknown_remote_not_dead() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-unreachable)
+  make_fakebin "$d" >/dev/null
+  printf 'working: refactoring the quota adapter\n' > "$d/state/rsm.status"
+  out=$(FM_FAKE_SSH_RC=255 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "unreachable remote exits 0"
+  assert_contains "$out" "unknown-remote" "an unreachable remote must be labeled unknown-remote"
+  assert_contains "$out" "not proof of death" "an unreachable remote must not read as dead"
+  assert_not_contains "$out" "worktree gone" "an unreachable remote must never read as torn down"
+  assert_not_contains "$out" "backend target gone" "an unreachable remote must never read as a dead target"
+  pass "fm-crew-state remote: an unreachable host reads unknown-remote, never gone or dead"
+}
+
+test_remote_dead_reports_remote_verdict() {
+  reset_fakes
+  local d out rc
+  d=$(setup_remote_case remote-dead)
+  make_fakebin "$d" >/dev/null
+  out=$(FM_FAKE_REMOTE_STATE_OUT=dead FM_FAKE_SSH_RC=0 run_remote_crew_state "$d" rsm); rc=$?
+  expect_code 0 "$rc" "remote dead exits 0"
+  assert_contains "$out" "remote endpoint dead on remote-mac" \
+    "a genuinely dead remote endpoint reports the remote host's own verdict"
+  pass "fm-crew-state remote: the remote host's own dead verdict is reported truthfully"
+}
+
 test_missing_meta() {
   reset_fakes
   local d; d=$(new_case nometa)
@@ -1450,12 +1425,6 @@ test_stale_blocked_superseded
 test_genuine_parked_not_superseded
 test_scalar_gate_parked_not_superseded
 test_gate_block_parked_not_superseded
-test_declared_pause_outranks_running_run
-test_declared_pause_outranks_ci_monitoring_not_green
-test_ci_green_outcome_beats_declared_pause
-test_parked_gate_beats_declared_pause
-test_run_outcomes_beat_declared_pause
-test_coarse_running_run_keeps_working_despite_pause
 test_ci_ready_done_log_beats_monitoring_run
 test_ci_monitoring_checks_green_surfaces_done
 test_top_level_ci_checks_green_surfaces_done
@@ -1491,6 +1460,10 @@ test_dead_window_still_reports_active_run_step
 test_no_timeout_uses_perl_bound
 test_scout_skips_run_lookup
 test_torn_down_worktree
+test_remote_alive_with_log_uses_status_log
+test_remote_alive_idle_is_healthy_not_gone
+test_remote_unreachable_is_unknown_remote_not_dead
+test_remote_dead_reports_remote_verdict
 test_missing_meta
 test_provably_working_via_runs_list_fallback
 test_not_provably_working_when_stopped

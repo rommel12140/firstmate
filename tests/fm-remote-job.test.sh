@@ -18,10 +18,24 @@ FAKE_PERL_LOG="$TMP_ROOT/perl.log"
 REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
+REPEAT_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
-trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; if [ -n "$RECOVERY_WORKER_PID" ]; then kill "$RECOVERY_WORKER_PID" 2>/dev/null || true; fi; if [ -f "$STATE_ROOT/worker.pid" ]; then kill "$(cat "$STATE_ROOT/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# worker.pid records the serving child, not its restart supervisor, so stopping
+# that pid alone leaves the supervisor to respawn - the leak
+# tests/fm-remote-job-orphan-reap.test.sh pins. Stop the whole worker tree.
+cleanup_remote_job_fixture() {
+  [ -z "$OTHER_PID" ] || kill "$OTHER_PID" 2>/dev/null || true
+  [ -z "$RECOVERY_WORKER_PID" ] || kill "$RECOVERY_WORKER_PID" 2>/dev/null || true
+  [ -z "$REPEAT_WORKER_PID" ] || kill "$REPEAT_WORKER_PID" 2>/dev/null || true
+  if [ -f "$STATE_ROOT/worker.pid" ]; then
+    fm_remote_job_stop_worker_tree "$(cat "$STATE_ROOT/worker.pid")" || true
+  fi
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup_remote_job_fixture EXIT
 
-cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$REMOTE_ROOT/bin/"
+cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" \
+  "$ROOT/bin/fm-remote-delta-read.sh" "$REMOTE_ROOT/bin/"
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
 cat > "$REMOTE_ROOT/bin/fm-probe-job.sh" <<'SH'
 #!/bin/bash
@@ -235,10 +249,14 @@ pass "ensure replaces a live worker after its code changes"
 RELOCATED_ROOT="$TMP_ROOT/relocated-root"
 cp -R "$REMOTE_ROOT" "$RELOCATED_ROOT"
 OLD_WORKER_PID=$NEW_WORKER_PID
+OLD_WORKER_PGID=$(fm_remote_job_process_pgid "$OLD_WORKER_PID") \
+  || fail "the worker replacement fixture could not resolve its process group"
 fm_remote_job_ensure_worker "$RELOCATED_ROOT" "$ACCOUNT_HOME" \
   || fail "$FM_REMOTE_JOB_ERROR"
 NEW_WORKER_PID=$(cat "$STATE_ROOT/worker.pid")
 [ "$NEW_WORKER_PID" != "$OLD_WORKER_PID" ] || fail "ensure retained a worker bound to a different code root"
+! kill -0 -- "-$OLD_WORKER_PGID" 2>/dev/null \
+  || fail "ensure left the replaced worker supervisor group alive"
 fm_remote_job_stage "$ACCOUNT_HOME" "$RELOCATED_ROOT" "$REMOTE_HOME" fm-probe-job.sh < /dev/null > /dev/null
 JOB_ID=$FM_REMOTE_JOB_ID
 fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
@@ -322,6 +340,84 @@ assert_present "$SECOND_DELAYED_SIDE_EFFECT" "the queued job did not receive its
 fm_remote_job_reap "$ACCOUNT_HOME" "$FIRST_JOB_ID" || fail "the first delayed job could not be reaped"
 fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the second delayed job could not be reaped"
 pass "queued jobs receive a fresh bounded execution window"
+
+if command -v shasum >/dev/null 2>&1; then
+  EMPTY_SHA=$(: | shasum -a 256 | awk '{print $1}')
+else
+  EMPTY_SHA=$(: | sha256sum | awk '{print $1}')
+fi
+mkdir -p "$REMOTE_HOME/state"
+REPLY_LOG_REL=state/parent-replies.status
+PREEMPT_SIDE_EFFECT="$TMP_ROOT/preempt-side-effect"
+FM_REMOTE_JOB_QUEUE_TIMEOUT=60
+FM_REMOTE_JOB_TIMEOUT=40
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-remote-delta-read.sh "$REPLY_LOG_REL" 0 "$EMPTY_SHA" 30 < /dev/null > /dev/null
+POLL_JOB_ID=$FM_REMOTE_JOB_ID
+POLL_JOB_DIR="$STATE_ROOT/jobs/$POLL_JOB_ID"
+for _ in $(seq 1 100); do
+  [ "$(fm_remote_job_read_state "$POLL_JOB_DIR" 2>/dev/null || true)" = running ] && break
+  sleep 0.05
+done
+[ "$(fm_remote_job_read_state "$POLL_JOB_DIR" 2>/dev/null || true)" = running ] \
+  || fail "the long-poll job did not begin running"
+PREEMPT_BEGAN=$(date +%s)
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-touch-job.sh "$PREEMPT_SIDE_EFFECT" < /dev/null > /dev/null
+JOB_ID=$FM_REMOTE_JOB_ID
+fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+PREEMPT_ELAPSED=$(( $(date +%s) - PREEMPT_BEGAN ))
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the short command behind a long poll did not complete"
+assert_present "$PREEMPT_SIDE_EFFECT" "the short command behind a long poll did not run"
+[ "$PREEMPT_ELAPSED" -le 10 ] || fail "a queued short command waited a full poll window behind the long poll"
+fm_remote_job_wait "$ACCOUNT_HOME" "$POLL_JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq "$FM_REMOTE_JOB_PREEMPTED_EXIT" ] \
+  || fail "a preempted long poll was not distinguished from an elapsed window"
+[ ! -s "$FM_REMOTE_JOB_STDOUT" ] || fail "a preempted long poll published partial stdout"
+[ ! -s "$FM_REMOTE_JOB_STDERR" ] || fail "a preempted long poll published partial stderr"
+fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the short command could not be reaped"
+fm_remote_job_reap "$ACCOUNT_HOME" "$POLL_JOB_ID" || fail "the preempted poll could not be reaped"
+pass "a queued short command preempts a running long poll instead of waiting its window"
+
+printf 'hello after preemption\n' > "$REMOTE_HOME/$REPLY_LOG_REL"
+FM_REMOTE_JOB_TIMEOUT=10
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-remote-delta-read.sh "$REPLY_LOG_REL" 0 "$EMPTY_SHA" 5 < /dev/null > /dev/null
+JOB_ID=$FM_REMOTE_JOB_ID
+fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 0 ] || fail "the re-armed poll after preemption did not complete"
+OUT=$(<"$FM_REMOTE_JOB_STDOUT")
+assert_contains "$OUT" 'status=delta' "the re-armed poll did not return a delta from the preserved cursor"
+assert_contains "$OUT" 'hello after preemption' "the re-armed poll lost data appended around the preemption"
+fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the re-armed poll could not be reaped"
+rm -f -- "$REMOTE_HOME/$REPLY_LOG_REL"
+pass "a poll re-armed after preemption reads the same cursor with nothing lost"
+
+FM_REMOTE_JOB_TIMEOUT=15
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-remote-delta-read.sh "$REPLY_LOG_REL" 0 "$EMPTY_SHA" 6 < /dev/null > /dev/null
+FIRST_JOB_ID=$FM_REMOTE_JOB_ID
+FIRST_JOB_DIR="$STATE_ROOT/jobs/$FIRST_JOB_ID"
+for _ in $(seq 1 100); do
+  [ "$(fm_remote_job_read_state "$FIRST_JOB_DIR" 2>/dev/null || true)" = running ] && break
+  sleep 0.05
+done
+[ "$(fm_remote_job_read_state "$FIRST_JOB_DIR" 2>/dev/null || true)" = running ] \
+  || fail "the first sibling poll did not begin running"
+POLL_PAIR_BEGAN=$(date +%s)
+fm_remote_job_stage "$ACCOUNT_HOME" "$REMOTE_ROOT" "$REMOTE_HOME" \
+  fm-remote-delta-read.sh "$REPLY_LOG_REL" 0 "$EMPTY_SHA" 1 < /dev/null > /dev/null
+JOB_ID=$FM_REMOTE_JOB_ID
+fm_remote_job_wait "$ACCOUNT_HOME" "$FIRST_JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+POLL_PAIR_ELAPSED=$(( $(date +%s) - POLL_PAIR_BEGAN ))
+[ "$FM_REMOTE_JOB_EXIT" -eq 75 ] || fail "the first sibling poll did not close its own window"
+[ "$POLL_PAIR_ELAPSED" -ge 4 ] || fail "a queued sibling poll preempted a running poll"
+fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID" || fail "$FM_REMOTE_JOB_ERROR"
+[ "$FM_REMOTE_JOB_EXIT" -eq 75 ] || fail "the queued sibling poll did not run after the first window"
+fm_remote_job_reap "$ACCOUNT_HOME" "$FIRST_JOB_ID" || fail "the first sibling poll could not be reaped"
+fm_remote_job_reap "$ACCOUNT_HOME" "$JOB_ID" || fail "the queued sibling poll could not be reaped"
+FM_REMOTE_JOB_QUEUE_TIMEOUT=5
+pass "sibling polls never preempt each other into a re-arm churn loop"
 
 STARTED="$TMP_ROOT/shutdown-started"
 SHUTDOWN_SIDE_EFFECT="$TMP_ROOT/shutdown-side-effect"
@@ -526,5 +622,73 @@ kill -TERM "$RECOVERY_WORKER_PID"
 wait "$RECOVERY_WORKER_PID" 2>/dev/null || true
 RECOVERY_WORKER_PID=
 pass "quarantine clears only after recorded execution has stopped"
+
+# A replacement stops a Linux worker by signalling its whole isolated group, and
+# the supervisor in that group forwards a second stop signal to the same serving
+# child, so the serving child is always signalled more than once. Signal a small
+# bounded burst and then keep signalling until it is gone: the first signal
+# starts the shutdown and every later one lands inside it, the same way the group
+# signal and the forwarded signal do. A shutdown that dies part way through
+# leaves its ownership lock behind holding a half-written temp file no later
+# worker can clear, and every replacement then fails to report ready.
+#
+# The burst is bounded and the follow-up signals are paced deliberately. An
+# unpaced signal loop delivers hundreds of thousands of signals per second,
+# which corrupts the signalled bash's own pending-trap bookkeeping ("warning:
+# run_pending_traps: bad value in trap_list[15]") and then kills it part way
+# through the shutdown with SIGTERM or SIGSEGV. That reports a shutdown defect
+# this worker does not have. Ten back-to-back signals still all land inside the
+# shutdown's first file operation, so the repeat this pins is unchanged: with
+# the default disposition restored instead of ignored, the ownership lock is
+# left behind every run.
+REPEAT_HOME="$TMP_ROOT/repeat-signal-account"
+REPEAT_STATE="$TMP_ROOT/repeat-signal-jobs"
+mkdir -p "$REPEAT_HOME"
+chmod 700 "$REPEAT_HOME"
+HOME="$REPEAT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$REPEAT_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  > "$TMP_ROOT/repeat-signal.out" 2> "$TMP_ROOT/repeat-signal.err" &
+REPEAT_WORKER_PID=$!
+for _ in $(seq 1 300); do
+  [ -f "$REPEAT_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$REPEAT_STATE/worker.ready" "the repeated-signal worker did not become ready"
+REPEAT_DEADLINE=$((SECONDS + 30))
+REPEAT_BURST=0
+while [ "$REPEAT_BURST" -lt 10 ]; do
+  kill -TERM "$REPEAT_WORKER_PID" 2>/dev/null || true
+  REPEAT_BURST=$((REPEAT_BURST + 1))
+done
+while kill -0 "$REPEAT_WORKER_PID" 2>/dev/null && [ "$SECONDS" -lt "$REPEAT_DEADLINE" ]; do
+  kill -TERM "$REPEAT_WORKER_PID" 2>/dev/null || true
+  sleep 0.05
+done
+if kill -0 "$REPEAT_WORKER_PID" 2>/dev/null; then
+  kill -KILL "$REPEAT_WORKER_PID" 2>/dev/null || true
+  wait "$REPEAT_WORKER_PID" 2>/dev/null || true
+  REPEAT_WORKER_PID=
+  fail "the repeatedly signalled worker never finished its shutdown"
+fi
+wait "$REPEAT_WORKER_PID" 2>/dev/null || true
+REPEAT_WORKER_PID=
+assert_absent "$REPEAT_STATE/worker.lock" \
+  "a repeatedly signalled shutdown left its ownership lock behind"
+assert_absent "$REPEAT_STATE/worker.ready" \
+  "a repeatedly signalled shutdown left its readiness heartbeat behind"
+HOME="$REPEAT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$REPEAT_STATE" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" --serve \
+  >> "$TMP_ROOT/repeat-signal.out" 2>> "$TMP_ROOT/repeat-signal.err" &
+REPEAT_WORKER_PID=$!
+for _ in $(seq 1 600); do
+  [ -f "$REPEAT_STATE/worker.ready" ] && break
+  sleep 0.05
+done
+assert_present "$REPEAT_STATE/worker.ready" \
+  "the worker after a repeatedly signalled shutdown never reported ready"
+kill -TERM "$REPEAT_WORKER_PID"
+wait "$REPEAT_WORKER_PID" 2>/dev/null || true
+REPEAT_WORKER_PID=
+pass "a repeatedly signalled shutdown still releases ownership for the next worker"
 
 echo "ALL TESTS PASSED"
