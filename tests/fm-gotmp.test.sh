@@ -57,8 +57,16 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
-  # fm-session-lock-lib.sh: sourced by the real backends/tmux.sh linked above.
+  # fm-session-lock-lib.sh and fm-cursor-lib.sh: both sourced by the real
+  # backends/tmux.sh linked above.
   ln -s "$ROOT/bin/fm-session-lock-lib.sh" "$fake/bin/fm-session-lock-lib.sh"
+  ln -s "$ROOT/bin/fm-cursor-lib.sh" "$fake/bin/fm-cursor-lib.sh"
+  # fm-tangle-lib.sh and fm-supervision-lib.sh: sourced by the real fm-guard.sh
+  # teardown runs. Teardown calls the guard with `|| true`, so a missing library
+  # here does not fail the run - it leaves the guard reaching for a file that is
+  # not there, which is the wrong thing for this fixture to be exercising.
+  ln -s "$ROOT/bin/fm-tangle-lib.sh" "$fake/bin/fm-tangle-lib.sh"
+  ln -s "$ROOT/bin/fm-supervision-lib.sh" "$fake/bin/fm-supervision-lib.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   ln -s "$ROOT/bin/fm-nm-run-lib.sh" "$fake/bin/fm-nm-run-lib.sh"
   # fm-lock-lib.sh: teardown sources it for the shared lock-staleness proof.
@@ -143,8 +151,16 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
-  # fm-session-lock-lib.sh: sourced by the real backends/tmux.sh linked above.
+  # fm-session-lock-lib.sh and fm-cursor-lib.sh: both sourced by the real
+  # backends/tmux.sh linked above.
   ln -s "$ROOT/bin/fm-session-lock-lib.sh" "$fake/bin/fm-session-lock-lib.sh"
+  ln -s "$ROOT/bin/fm-cursor-lib.sh" "$fake/bin/fm-cursor-lib.sh"
+  # fm-tangle-lib.sh and fm-supervision-lib.sh: sourced by the real fm-guard.sh
+  # teardown runs. Teardown calls the guard with `|| true`, so a missing library
+  # here does not fail the run - it leaves the guard reaching for a file that is
+  # not there, which is the wrong thing for this fixture to be exercising.
+  ln -s "$ROOT/bin/fm-tangle-lib.sh" "$fake/bin/fm-tangle-lib.sh"
+  ln -s "$ROOT/bin/fm-supervision-lib.sh" "$fake/bin/fm-supervision-lib.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   ln -s "$ROOT/bin/fm-nm-run-lib.sh" "$fake/bin/fm-nm-run-lib.sh"
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
