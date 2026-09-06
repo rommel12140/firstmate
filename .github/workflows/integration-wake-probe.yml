@@ -1,0 +1,43 @@
+name: Temporary integration wake interruption probe
+on:
+  push:
+    branches: [fm/fm-upstream-codex-upgrade]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Repeat the existing isolated interruption regression
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p .integration-ci
+          bash --version > .integration-ci/bash-version.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path.cwd()
+          source = (root / 'tests/fm-wake-queue.test.sh').read_text()
+          source = source.split('\ntest_self_held_lock_reclaims_instead_of_deadlocking\n', 1)[0]
+          source = source.replace('. "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"', '. "' + str(root / 'tests/wake-helpers.sh') + '"')
+          source += '\ntest_interruption_before_and_after_raw_commit\n'
+          (root / '.integration-ci/probe.sh').write_text(source)
+          PY
+          for round in $(seq 1 100); do
+            if ! bash .integration-ci/probe.sh > ".integration-ci/round-$round.log" 2>&1; then
+              cat ".integration-ci/round-$round.log"
+              bash -xc 'export SHELLOPTS; exec bash "$1"' _ .integration-ci/probe.sh \
+                > .integration-ci/trace.log 2>&1 || true
+              echo "Regression failed in round $round"
+              exit 1
+            fi
+          done
+          echo 'All 100 isolated interruption rounds passed'
+      - name: Retain diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-wake-interruption-probe
+          path: .integration-ci/
