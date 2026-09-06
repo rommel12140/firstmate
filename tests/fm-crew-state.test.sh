@@ -96,11 +96,6 @@ set -u
 # responses that fm_backend_tmux_agent_state owns as death.
 [ "${FM_FAKE_TMUX_UNREADABLE:-0}" = 1 ] && { printf 'no current client\n' >&2; exit 1; }
 case "${1:-}" in
-  list-windows)
-    # A successful but empty inventory: it omits the crew's window, so absence
-    # is proved by the answer rather than by an addressed call failing. Only
-    # reached once display-message has already failed.
-    ;;
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
     printf '%%1\n' ;;
@@ -109,10 +104,26 @@ case "${1:-}" in
     # display-message exit code: real tmux answers an absent target from the
     # current client's own window and still exits 0. Every window this case
     # recorded exists, unless the case declares the endpoint gone.
-    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    # Missing is a successful empty inventory; unreadable fails above.
+    [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 0
+    session= format=
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) session=$2; shift ;;
+        -F) format=$2; shift ;;
+      esac
+      shift
+    done
     for meta in "${FM_STATE_OVERRIDE:-/nonexistent}"/*.meta; do
       [ -f "$meta" ] || continue
-      grep '^window=' "$meta" | cut -d= -f2-
+      window=$(sed -n 's/^window=//p' "$meta")
+      [ -z "$session" ] || [ "${window%%:*}" = "$session" ] || continue
+      case "$format" in
+        '#{window_name}') printf '%s\n' "${window#*:}" ;;
+        '#{session_name}:#{window_name}') printf '%s\n' "$window" ;;
+        *) exit 1 ;;
+      esac
     done
     exit 0 ;;
   capture-pane)
