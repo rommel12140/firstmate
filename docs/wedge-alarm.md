@@ -5,6 +5,8 @@ When injection cannot confirm a submit past `FM_MAX_DEFER_SECS`, `inject_wedge_a
 The active alert is pane-independent because a tmux status-line flash has no cross-backend equivalent and cannot reach an unattended captain reliably.
 The durable marker and tmux flash remain as additional signals.
 
+The channel implementation is shared through `bin/fm-alert-lib.sh`; the [Codex Stop adapter](watcher-continuity.md#codex-stop-notification) uses it for notification failures.
+
 ## Channels
 
 `config/wedge-alarm` is local and gitignored.
@@ -19,7 +21,7 @@ It lists channel directives, one per non-empty, non-comment line, and every list
 - `command:<cmd>` runs `<cmd>` through `sh -c` with the alarm summary as `$1` and on stdin, allowing delivery to a phone or pager service.
 
 An absent `config/wedge-alarm` behaves as `auto`, which is default-on on macOS.
-This is deliberate because the alarm fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
+The away-mode caller fires only after a genuine max-defer wedge and is rate-limited to at most once per max-defer window.
 
 Each channel is best-effort.
 A missing binary or non-zero exit logs a warning and continues to the next channel without crashing the daemon loop.

@@ -436,6 +436,59 @@ Observed output:
 fm-claude-stop-autoarm: ok
 ```
 
+## Codex native Stop notification
+
+Verified 2026-09-06 on macOS arm64 with `codex-cli 0.153.4`, Herdr 0.7.3, and stock Bash 3.2.57.
+The current notification owner and supported limits are in [watcher continuity](../watcher-continuity.md#codex-stop-notification).
+The earlier foreground-checkpoint result below remains a diagnostic-helper result, not the normal Codex wait protocol.
+
+Refresh the real TUI proof with an unused private evidence directory:
+
+```sh
+FM_CODEX_NOTIFY_LIVE_E2E=1 \
+FM_CODEX_NOTIFY_LIVE_DIR="$PWD/.codex-notify-live-proof" \
+bin/fm-test-run.sh tests/fm-codex-stop-live-e2e.test.sh
+```
+
+The guard uses a generated non-default Herdr session exclusively through `bin/fm-herdr-lab.sh`.
+It uses the existing Codex continuity guard's unsandboxed tool permissions inside the isolated lab because macOS workspace-write denies the process inspection required by the existing lock/ack owners.
+It changes no live primary permissions or hooks.
+
+Native `UserPromptSubmit` and `Stop` payloads identified four distinct started turns, three completed turns, and exactly one deliberately interrupted turn in one primary session.
+Both a completion and a needs-attention status passed through the real watcher.
+The attention callback accepted while busy remained queued across Escape and a user recovery turn.
+Both statuses were handled before the exact generation-bound acknowledgement emptied the durable queue.
+The initial quiet interval and the post-delivery quiet interval each lasted 12 seconds with identical canonical native-event snapshots, detecting new starts as well as completed turns.
+Normal `/quit` retired the adapter.
+
+The real run emitted the following functional verdict (private evidence path omitted):
+
+```text
+ok - codex-cli 0.153.4 real TUI idle, completion, busy cancellation, attention, ack, and exit
+```
+
+The run's test EXIT handler then failed because a test edit had renamed its cleanup function.
+Guarded manual teardown succeeded and verified the identical running default-session tripwire.
+The corrected handler was subsequently exercised with two fresh named labs and no model calls: it preserved exit 0 and intentional exit 7, with successful guarded teardown in both cases.
+The cleanup exception is distinct from the native functional result.
+
+`tests/fm-codex-stop-observer.test.sh` exercises the same parsed-object observer without a provider: concatenated JSON, distinct turn IDs, duplicate records, conflicting duplicates, delayed queued callbacks, and new post-drain starts/Stops which must fail quiet comparison.
+Replaying retained native streams through it is retrospective evidence only.
+`tests/fm-codex-stop.test.sh` covers singleton ownership, bare-shell refusal, bounded transport failure and alarm, repaired delivery, unacknowledged replay, hard adapter cancellation, restart, real handling-successor continuity, primary exit, and missing-watcher diagnostics.
+
+Capability evidence comes from the installed CLI's `queue --help`, its generated schemas, real TUI execution, and version-matched official source:
+
+- [Queue command](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/tui/src/session_queue_commands.rs) targets the exact thread through `thread/queue/add` and reports unsupported-server failures.
+- [Queue service](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/ext/queue/src/service.rs) dispatches queued input when a loaded thread becomes idle.
+- [Hook handler](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/config/src/hook_config.rs) exposes `async`, not Claude's `asyncRewake` field.
+- [Command runner](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/hooks/src/engine/command_runner.rs) bounds hook execution but permits successful hooks to leave detached helpers running.
+- [UserPromptSubmit schema](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/hooks/schema/generated/user-prompt-submit.command.input.schema.json) supplies the turn identity used by the start observer.
+
+The [official hook documentation](https://learn.chatgpt.com/docs/hooks) describes asynchronous output delivery at a later safe point.
+A separate real asynchronous Stop probe completed while the TUI stayed idle and did not start another model turn, so asynchronous hook output alone is not used as the notification path.
+Remote/shared app-server ownership and simultaneous thread switching were not validated by this local TUI guard.
+The retained Linux drain-cancellation anomaly is not declared fixed: this adapter never launches or cancels a drain, and leaves acknowledgement with the existing owner.
+
 ## Watcher continuity
 
 The cross-harness evidence combines the 2026-07-17 live pass with Claude's replacement Stop-owned path revalidated on 2026-07-24, all against isolated project and home state.

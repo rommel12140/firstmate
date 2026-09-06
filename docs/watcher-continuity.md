@@ -40,9 +40,9 @@ The model no longer re-arms after ordinary wakes.
 No PreToolUse hook denies fleet commands based on watcher status.
 A genuine auto-arm failure describes the automatic mechanism as broken and never directs a routine manual background arm.
 Terminal arm-output classification (`started`, `attached`, or `FAILED`) remains defense in depth for the manual recovery path.
-Codex retains its bounded foreground checkpoint protocol.
+Codex uses the Stop notification owner described below.
 Grok retains its tracked background-task notification protocol.
-No adapter starts a replacement with shell `&`.
+Models never start replacement watchers with shell `&`; each adapter owns its child lifecycle.
 
 The turn-end guard remains the final backstop rather than the normal continuity mechanism and cooperates with the auto-arm in its `--claude` mode.
 
@@ -119,6 +119,36 @@ It also covers generation-claim single-flight, stuck-claim supersession, superse
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
-Claude depends on the Stop `asyncRewake` rewake, Cursor depends on its awaited stop-hook park, Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
+Claude depends on the Stop `asyncRewake` rewake, Cursor depends on its awaited stop-hook park, Grok retains native background-completion notifications, and Codex uses native queued input from its Stop-owned adapter.
 
 [`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the 2026-07-24 Stop-owned Claude auto-arm results, and exact opt-in commands.
+
+## Codex Stop notification
+
+`bin/fm-codex-stop.sh` owns the local Codex TUI notification transport.
+The synchronous Stop hook verifies a detached home singleton before returning; successful Codex hooks permit that helper lifetime.
+The helper runs the existing `fm-watch-arm.sh` owner and sends a static handling instruction with native `codex queue --thread <session_id> --message <instruction>` when the durable queue changes.
+The watcher remains the event classifier, and the wake drain remains the sole post-handling acknowledgement owner.
+Native queue acceptance does not consume a Firstmate event.
+A later Stop retries unacknowledged work, including interrupted handling; delivery is at least once, so handling remains idempotent.
+
+The adapter binds its own process, the primary session-lock process identity, the home, and the native thread UUID.
+Repeated Stop calls retain the same live singleton.
+The arm observes its Codex adapter owner's identity while waiting, so a killed adapter cannot strand its owned watcher.
+Normal primary exit, identity replacement, and away-mode handoff retire the adapter through the existing arm cancellation path.
+A plain shell, foreign session-lock holder, or shared/remote app-server ancestry cannot claim this path.
+The native queue must be able to reach the same local thread storage; unsupported commands and delivery errors are explicit failures, never terminal typing fallbacks.
+
+Two bounded queue attempts precede a durable failure record and the configured active alarm.
+The unchanged failure episode does not become a command retry loop.
+After repairing the cause, the next Stop retries retained work.
+A missing or unhealthy watcher still reaches the existing turn-end guard; a quiet watcher does not submit model input.
+`bin/fm-alert-lib.sh` shares the existing configured alert transport with the away-mode daemon; it does not add an alert policy.
+
+Installation requires deploying the matching tracked `.codex/hooks.json` and `bin/` scripts into the primary code root, reviewing the project hook trust, and starting a supported local Codex TUI with the usual verified home lock.
+No global hook, daemon configuration, new dependency, or runtime backend is installed.
+Apply through the normal approved Firstmate update path; do not replace hooks underneath a live primary.
+Rollback restores the previous tracked hook and scripts at the next approved primary restart, which also retires the old adapter's process owner; preserve the durable wake queue for the previous protocol to drain.
+The explicit checkpoint helper remains available for diagnostics and rollback, but is not the normal idle wait.
+
+[`verification/supervision.md`](verification/supervision.md) records native capability evidence and the opt-in real TUI guard.
