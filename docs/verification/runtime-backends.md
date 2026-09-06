@@ -1549,3 +1549,9 @@ It names the installed version and the floor rather than degrading quietly, and 
 The same guard against the pre-change extension in the same lab measured a 676.9 ms worst keystroke echo while delivering two outcomes and a 295.3 ms worst echo with nothing to deliver, against a 49.2 ms extension-free floor, and failed as designed.
 Measured through the same real `fm_branch_report` tool and real `bin/` scripts with a 1 ms interval timer, the largest single block of the JavaScript thread fell from 273 ms to 2.0 ms for a routine outcome, from 286 ms to 2.0 ms for a captain outcome, and from 134 ms to 1.9 ms for main's acknowledgement, against a 1.3-2.2 ms idle-loop floor.
 Those absolute figures are specific to this host and Pi version; the guards assert the relationship (delivery must stay in the class of the same machine's own floor) rather than a remembered millisecond number.
+
+## Codex Stop event notification
+
+Verified 2026-09-06 with `codex-cli 0.153.4` on macOS arm64 in a named Herdr 0.7.3 lab.
+The [supervision verification record](supervision.md#codex-native-stop-notification) owns the exact refresh command, native start/Stop evidence, interruption/acknowledgement result, observer controls, and test cleanup exception.
+The test never addresses Herdr through an ambient session selector or touches the default session's lifecycle.

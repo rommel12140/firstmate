@@ -9,8 +9,10 @@
 # own tracked background task (e.g. run_in_background), or - for a Claude
 # primary - inside the Stop asyncRewake hook's foreground process tree
 # (bin/fm-claude-stop-autoarm.sh), where the harness owns the process group and
-# the hook's exit-2 rewake is the notification. Run it as its own standalone
-# background task, never bundled onto the tail of another command.
+# the hook's exit-2 rewake is the notification. Codex instead uses its Stop-owned
+# fm-codex-stop.sh adapter, with native queue notification and the lifetime bind
+# below. Model-issued background arms must remain standalone tracked tasks,
+# never bundled onto the tail of another command.
 # NEVER fire it and forget with a shell `&` inside another call: that backgrounded
 # child is reaped when the call returns, leaving NO watcher running and a false
 # "already running" off the dying process. That exact mistake silently took
@@ -50,6 +52,12 @@
 # lock identity before and after close, and successor disposition. The separate
 # state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
 # log and is never written here.
+#
+# The Codex Stop adapter passes FM_CODEX_NOTIFY_PID and
+# FM_CODEX_NOTIFY_IDENTITY to bind this arm to its detached owner. Only that
+# opt-in path observes owner loss while waiting, including owner SIGKILL, and
+# cancels its own child through the same signal cleanup used by other harnesses.
+# Attached watchers remain owned by their original arm. No other caller changes.
 #
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
@@ -248,6 +256,12 @@ healthy_watcher() {
   HEALTHY_IDENTITY=$FM_WATCHER_HEALTHY_IDENTITY
 }
 
+codex_owner_alive() {
+  [ -n "${FM_CODEX_NOTIFY_PID:-}${FM_CODEX_NOTIFY_IDENTITY:-}" ] || return 0
+  [ -n "${FM_CODEX_NOTIFY_PID:-}" ] && [ -n "${FM_CODEX_NOTIFY_IDENTITY:-}" ] \
+    && [ "$(fm_pid_identity "$FM_CODEX_NOTIFY_PID" 2>/dev/null)" = "$FM_CODEX_NOTIFY_IDENTITY" ]
+}
+
 report_attached() {
   local age
   age=$(fm_path_age "$BEAT")
@@ -312,6 +326,7 @@ close_unobserved_cycle() {
 attach_and_wait() {
   local attached_pid=$1
   while :; do
+    codex_owner_alive || handle_attached_signal TERM 143
     if healthy_watcher; then
       if [ "$HEALTHY_PID" != "$attached_pid" ] || [ "$HEALTHY_IDENTITY" != "$cycle_watcher_identity" ]; then
         cycle_log_append unknown unknown lock-replaced "attached:$HEALTHY_PID"
@@ -406,6 +421,8 @@ if [ "$mode" = handling-delivered ]; then
     && fm_recovery_marker_begin_handling "$STATE/.watcher-down" "$handling_generation"
   exit $?
 fi
+
+codex_owner_alive || exit 143
 
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
@@ -540,6 +557,16 @@ owned_child_finished() {
   return "$status"
 }
 
+wait_owned_child() {
+  if [ -n "${FM_CODEX_NOTIFY_PID:-}" ]; then
+    while jobs -pr | grep -qx "$child"; do
+      codex_owner_alive || handle_arm_signal TERM 143
+      sleep 0.2
+    done
+  fi
+  wait "$child"
+}
+
 # Verify the outcome: poll until this child is the confirmed healthy watcher, or
 # until some other watcher legitimately holds the singleton (a startup race), or
 # until the child gives up. Only then print the honest line.
@@ -547,12 +574,13 @@ owned_child_finished() {
 # collapsing when startup begins just before the next second boundary.
 deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
 while :; do
+  codex_owner_alive || handle_arm_signal TERM 143
   if healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       if ! handling_generation=$(handling_successor_generation); then
         cleanup_child
-        wait "$child" 2>/dev/null || true
+        wait_owned_child 2>/dev/null || true
         cycle_log_append 1 none handling-handoff-failed none
         echo "watcher: FAILED - established successor could not inspect handling state"
         exit 1
@@ -563,19 +591,19 @@ while :; do
       else
         echo "watcher: started pid=$child (beacon fresh)"
       fi
-      wait "$child"
+      wait_owned_child
       rc=$?
       owned_child_finished "$rc"
       exit $?
     fi
     # Another watcher won the singleton; our child stood down.
-    wait "$child"
+    wait_owned_child
     rc=$?
     owned_child_finished "$rc"
     exit $?
   fi
   if [ "$child_done" -eq 0 ] && ! fm_pid_alive "$child"; then
-    wait "$child"
+    wait_owned_child
     rc=$?
     child_done=1
     owned_child_finished "$rc"
@@ -588,7 +616,7 @@ done
 trap - HUP TERM INT
 print_watch_output "$child_out"
 cleanup_child
-wait "$child" 2>/dev/null
+wait_owned_child 2>/dev/null
 rc=$?
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
