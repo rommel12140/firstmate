@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # No-provider observer controls, including optional retrospective native replay.
 set -eu
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-codex-observer)
 OBS="$ROOT/tests/codex-stop-observer.jq"

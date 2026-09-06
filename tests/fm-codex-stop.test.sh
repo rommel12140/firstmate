@@ -4,6 +4,7 @@
 # worker event production are fixtures. The opt-in Codex suite proves the vendor.
 # shellcheck disable=SC2016
 set -u
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-codex-stop)
 LAB="$TMP_ROOT/home"
