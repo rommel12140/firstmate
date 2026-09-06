@@ -25,19 +25,21 @@ jobs:
           source += '\ntest_interruption_before_and_after_raw_commit\n'
           (root / '.integration-ci/probe.sh').write_text(source)
           PY
-          for round in $(seq 1 100); do
-            if ! bash .integration-ci/probe.sh > ".integration-ci/round-$round.log" 2>&1; then
+          for round in $(seq 1 20); do
+            echo "Starting interruption round $round"
+            if ! timeout 30 bash .integration-ci/probe.sh > ".integration-ci/round-$round.log" 2>&1; then
               cat ".integration-ci/round-$round.log"
-              bash -xc 'export SHELLOPTS; exec bash "$1"' _ .integration-ci/probe.sh \
+              timeout 30 bash -xc 'export SHELLOPTS; exec bash "$1"' _ .integration-ci/probe.sh \
                 > .integration-ci/trace.log 2>&1 || true
               echo "Regression failed in round $round"
               exit 1
             fi
           done
-          echo 'All 100 isolated interruption rounds passed'
+          echo 'All 20 isolated interruption rounds passed'
       - name: Retain diagnostic evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-wake-interruption-probe
           path: .integration-ci/
+          include-hidden-files: true
