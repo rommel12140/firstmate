@@ -87,7 +87,34 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    session= format=
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -t) session=$2; shift ;;
+        -F) format=$2; shift ;;
+      esac
+      shift
+    done
+    # The explicit typed-plane target and the locally recorded windows exist.
+    windows=sess:win
+    for meta in "$FM_HOME/state"/*.meta; do
+      [ -f "$meta" ] || continue
+      windows="$windows
+$(sed -n 's/^window=//p' "$meta")"
+    done
+    while IFS= read -r window; do
+      [ -z "$session" ] || [ "${window%%:*}" = "$session" ] || continue
+      case "$format" in
+        '#{window_name}') printf '%s\n' "${window#*:}" ;;
+        '#{session_name}:#{window_name}') printf '%s\n' "$window" ;;
+        *) exit 1 ;;
+      esac
+    done <<EOF
+$windows
+EOF
+    exit 0 ;;
 esac
 exit 0
 SH
