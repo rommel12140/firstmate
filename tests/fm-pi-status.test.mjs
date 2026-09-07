@@ -21,27 +21,35 @@ const iso = ms => new Date(ms).toISOString();
 const payload = (provider = 'codex', windows = [
   { id: 'short', label: '5h', kind: 'session', percentRemaining: 0, resetsAt: iso(epoch + 75 * 60000), windowSeconds: 18000 },
   { id: 'weekly', label: 'week', kind: 'weekly', percentRemaining: 63, resetsAt: iso(epoch + 3 * 86400000), windowSeconds: 604800 },
+  { id: 'spark-short', label: 'GPT-5.3-Codex-Spark session', kind: 'model', percentRemaining: 100, resetsAt: iso(epoch + 18000000) },
+  { id: 'spark-week', label: 'GPT-5.3-Codex-Spark week', kind: 'model', percentRemaining: 100, resetsAt: iso(epoch + 604800000) },
 ]) => ({ schemaVersion: 5, generatedAt: iso(now), providers: [{ provider, state: { status: 'fresh', stale: false }, windows }] });
 const snapshot = () => parseQuota(payload(), 'codex');
 const output = result => quotaSegments(result, now).join('\n');
-assert.match(output(snapshot()), /100% USED 0% LEFT/);
-assert.match(output(snapshot()), /37% USED 63% LEFT/);
-assert.match(output(snapshot()), /Pi link unverified/);
-assert.match(output(snapshot()), /reset 1h 15m/);
-assert.match(output(snapshot()), /reset 3d 0h/);
+assert.equal(output(snapshot()), 'Codex account week: 63% left | reset 3d 0h');
+assert.doesNotMatch(output(snapshot()), /Spark|session|short window|Pi link|USED/);
+assert.equal(snapshot().windows.length, 4, 'compact rendering does not discard parsed windows');
+assert.match(output(parseQuota(payload('claude'), 'claude')), /Claude account week: 63% left/);
+const noWeek = payload('codex', payload().providers[0].windows.filter(w => w.kind !== 'weekly'));
+assert.equal(output(parseQuota(noWeek, 'codex')), 'Codex account week: unavailable');
+const duplicateWeek = payload();
+duplicateWeek.providers[0].windows.push({ ...duplicateWeek.providers[0].windows[1], id: 'other-week' });
+assert.equal(output(parseQuota(duplicateWeek, 'codex')), 'Codex account week: unavailable');
 assert.equal(resetCountdown(epoch + 1, epoch), '1m');
 assert.equal(resetCountdown(epoch, epoch), 'passed');
 let bad = payload();
-bad.providers[0].windows[0].percentRemaining = -1;
-assert.match(output(parseQuota(bad, 'codex')), /5h.*USED \? LEFT \?/);
-bad.providers[0].windows[0].percentRemaining = null;
-assert.doesNotMatch(output(parseQuota(bad, 'codex')), /100% USED/);
-bad.providers[0].windows[0].percentRemaining = 40;
-bad.providers[0].windows[0].percentUsed = 20;
-assert.match(output(parseQuota(bad, 'codex')), /5h.*USED \?/);
-bad = payload(); bad.providers[0].state.untrustedWindowIds = ['short'];
-assert.match(output(parseQuota(bad, 'codex')), /5h.*USED \?/);
-bad = payload(); bad.providers[0].windows[0].resetsAt = 'invalid';
+bad.providers[0].windows[1].percentRemaining = 0;
+assert.match(output(parseQuota(bad, 'codex')), /account week: 0% left/);
+bad.providers[0].windows[1].percentRemaining = -1;
+assert.match(output(parseQuota(bad, 'codex')), /remaining unknown/);
+bad.providers[0].windows[1].percentRemaining = null;
+assert.match(output(parseQuota(bad, 'codex')), /remaining unknown/);
+bad.providers[0].windows[1].percentRemaining = 40;
+bad.providers[0].windows[1].percentUsed = 20;
+assert.match(output(parseQuota(bad, 'codex')), /remaining unknown/);
+bad = payload(); bad.providers[0].state.untrustedWindowIds = ['weekly'];
+assert.match(output(parseQuota(bad, 'codex')), /remaining unknown/);
+bad = payload(); bad.providers[0].windows[1].resetsAt = 'invalid';
 assert.match(output(parseQuota(bad, 'codex')), /reset unknown/);
 bad = payload(); bad.providers[0].state.stale = true;
 assert.match(output(parseQuota(bad, 'codex')), /STALE last/);
@@ -58,8 +66,8 @@ assert.equal(parseQuota(bad, 'codex').state, 'unknown');
 const saved = snapshot();
 now += 121000;
 assert.match(output(saved), /STALE/);
-now = epoch + 76 * 60000;
-assert.match(output(saved), /USED \? LEFT \? \| reset passed/);
+now = epoch + 3 * 86400000;
+assert.match(output(saved), /remaining unknown \| reset passed/);
 now = epoch - 1;
 assert.match(output(saved), /STALE/);
 now = epoch;
@@ -71,7 +79,7 @@ assert.equal(quotaProviderFor({ ...model, provider: 'openai' }), undefined);
 assert.equal(quotaProviderFor({ ...model, baseUrl: undefined }), undefined);
 assert.equal(quotaProviderFor({ ...model, baseUrl: 'https://proxy.invalid' }), undefined);
 assert.equal(quotaProviderFor({ ...model, api: 'openai-responses' }), undefined);
-console.log('ok - supplied windows, exhaustion, unknowns, identity qualifier, stale clock and rollover');
+console.log('ok - account weekly summary, hidden model windows, exhaustion, unknowns, stale clock and rollover');
 
 let reads = 0;
 let release;
@@ -89,15 +97,16 @@ for (const width of [1, 8, 20, 40, 80, 120, 208]) {
   for (const line of lines) assert.ok(visibleWidth(line) <= width, `overflow ${width}: ${line}`);
   assert.deepEqual(lines, statusLines(context, cache, width, now));
   if (width >= 40) {
-    assert.match(lines.join('\n'), /100% USED 0% LEFT/);
-    assert.match(lines.join('\n'), /37% USED 63% LEFT/);
+    assert.match(lines.join('\n'), /63% left/);
+    assert.doesNotMatch(lines.join('\n'), /Spark|short window|Pi link/);
   }
 }
 context = { ...context, model: { ...model, id: '\x1b[31m模型-é\x1b[0m' } };
 for (const line of statusLines(context, cache, 40, now)) assert.ok(visibleWidth(line) <= 40);
 assert.match(statusLines({ ...context, getContextUsage: () => undefined }, cache, 208, now).join('\n'), /Context unknown/);
 assert.match(statusLines({ ...context, getContextUsage: () => ({ percent: null }) }, cache, 208, now).join('\n'), /Context unknown/);
-assert.doesNotMatch(statusLines({ ...context, model: { ...model, provider: 'unsupported' } }, cache, 208, now).join('\n'), /63% LEFT/);
+assert.doesNotMatch(statusLines({ ...context, model: { ...model, provider: 'unsupported' } }, cache, 208, now).join('\n'), /63% left/);
+assert.equal(statusLines({ ...context, model }, cache, 208, now).length, 1, 'wide footer is one compact row');
 await cache.dispose();
 
 let aborted = false;
@@ -115,7 +124,7 @@ await errors.refresh('codex'); now += 60000;
 result = { provider: 'codex', state: 'timeout', windows: [] };
 await errors.refresh('codex');
 assert.match(output(errors.get('codex')), /TIMEOUT/);
-assert.match(output(errors.get('codex')), /STALE last/);
+assert.match(output(errors.get('codex')), /TIMEOUT last/);
 now += 60000; result = parseQuota(payload('codex', []), 'codex');
 await errors.refresh('codex'); assert.equal(errors.get('codex').windows.length, 0);
 await errors.dispose();

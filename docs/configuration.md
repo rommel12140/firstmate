@@ -34,15 +34,15 @@ The stock directory, branch, session name, token/cache totals, cost, and other e
 Calm's preference and transcript presentation do not change these rows.
 
 For Pi's standard Codex and Anthropic provider endpoints, the extension reads the installed `quota-axi --provider <provider> --json` surface.
-Each supplied window keeps its normalized label, percent USED, percent LEFT, and reset countdown; model windows retain a model qualifier.
-An absent Codex account short window is explicitly unavailable.
+The compact summary shows only the account weekly percent remaining and reset countdown; model-specific and short-window details remain in the full quota-axi report.
+An absent or ambiguous account weekly window shows unavailable, never a substitute model window.
 Other providers or custom endpoints show unavailable and cannot inherit the previous provider's quota.
-The quota-axi account's relationship to Pi is always labeled unverified: Pi's nonsecret model metadata establishes a provider surface, but does not establish a shared account or billing scope.
+The label explicitly names the Codex or Claude account week, not this session's allowance: Pi's nonsecret model metadata establishes a provider surface, but does not establish a shared account or billing scope.
 In particular, Claude Code plan windows are not proof of Pi subscription allowance.
 No identity or credential is shown, read by this extension, or used to create a new login flow.
 
 Quota reads are asynchronous, bounded, cached, and cancelled with the session; countdown changes are local display updates.
-Old readings carry explicit STALE labels, elapsed reset windows become unknown, and errors or missing evidence never become a synthetic allowance.
+Old readings carry an explicit STALE or read-error label and identify the value as the last reading; elapsed reset windows become unknown, and errors or missing evidence never become a synthetic allowance.
 Display refresh does not invoke a model or write session or Firstmate status events.
 The source owner for parsing, refresh bounds, and subprocess cleanup is `.pi/extensions/lib/fm-quota-status.ts`; `.pi/extensions/fm-primary-status.ts` owns the below-editor widget and its lifecycle.
 The public-interface and isolated Pi SDK regressions run with `bin/fm-test-run.sh tests/fm-pi-status.test.sh tests/fm-pi-primary-types.test.sh`.
