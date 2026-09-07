@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Pi branch row ownership command surface, under the durable queue lock.
+# activate PID GENERATION | publish GENERATION SEQUENCE... | release GENERATION
+# deactivate PID GENERATION retires only that owner.
+# acknowledge GENERATION CUTOFF delegates a proven replay's post-handling ack
+# to fm-wake-drain.sh, preserving actor claims and recovery-generation semantics.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,6 +104,30 @@ case "${1:-}" in
       TMP=
     fi
     ;;
+  acknowledge)
+    generation=${2:-}
+    cutoff=${3:-}
+    [ "$#" -eq 3 ] || exit 2
+    case "$generation" in ''|*[!A-Za-z0-9._-]*) exit 2 ;; esac
+    case "$cutoff" in ''|*[!0-9]*) exit 2 ;; esac
+    fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1
+    LOCK_HELD=true
+    owner_matches '' "$generation" || exit 1
+    rows_valid "$BRANCH_ROWS" || exit 1
+    fm_recovery_marker_snapshot "$STATE/.watcher-down" || exit 1
+    if [ -e "$STATE/.watcher-down" ] || [ -L "$STATE/.watcher-down" ]; then
+      [ -n "$FM_RECOVERY_MARKER_TOKEN" ] || exit 1
+    fi
+    recovery=${FM_RECOVERY_MARKER_TOKEN##*:}
+    # A missing episode cannot authorize retirement, but the drain's existing
+    # generation-mismatch contract still consumes only these granted rows.
+    recovery=${recovery:-unrecorded}
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    LOCK_HELD=false
+    FM_SUPERVISION_ACTOR=branch "$SCRIPT_DIR/fm-wake-drain.sh" \
+      --ack-through "$cutoff" --recovery-generation "$recovery"
+    exit $?
+    ;;
   release)
     generation=${2:-}
     [ "$#" -eq 2 ] || exit 2
@@ -117,7 +146,7 @@ case "${1:-}" in
     rm -f -- "$BRANCH_ROWS" "$BRANCH_OWNER" || exit 1
     ;;
   *)
-    echo "usage: fm-wake-grant.sh activate PID GENERATION | publish GENERATION SEQUENCE... | release GENERATION | deactivate PID GENERATION" >&2
+    echo "usage: fm-wake-grant.sh activate PID GENERATION | publish GENERATION SEQUENCE... | acknowledge GENERATION CUTOFF | release GENERATION | deactivate PID GENERATION" >&2
     exit 2
     ;;
 esac

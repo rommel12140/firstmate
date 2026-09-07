@@ -154,14 +154,14 @@ test_outcome_startup_replay_preserves_silence() {
 
   replay=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "mixed startup replay failed"
   assert_not_contains "$replay" "fleet reviewed, nothing changed" "startup replay printed a silent outcome"
-  assert_contains "$replay" "worker recovered automatically" "startup replay lost a visible routine outcome"
+  assert_not_contains "$replay" "worker recovered automatically" "startup replay exposed a private routine outcome"
   [ -z "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" ] \
     || fail "startup replay did not mark the silent and visible rows read"
 
   printf '%s\n' '{"seq":3,"epoch":1,"task":"task-legacy","wake":"","verdict":"routine","summary":"legacy visible outcome"}' \
     >> "$home/state/branch-outcomes.jsonl"
   replay=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "legacy startup replay failed"
-  assert_contains "$replay" "legacy visible outcome" "startup replay hid a legacy row with no silent field"
+  assert_not_contains "$replay" "legacy visible outcome" "startup replay exposed a legacy routine row"
   [ -z "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" ] \
     || fail "startup replay did not mark the legacy row read"
 
@@ -186,7 +186,7 @@ test_outcome_startup_replay_stops_at_captain_barrier() {
     --task task-3 --verdict routine --summary 'routine behind captain' >/dev/null || fail "trailing append failed"
 
   replay=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" startup-replay) || fail "barrier replay failed"
-  assert_contains "$replay" "leading routine" "startup replay lost the leading routine row"
+  assert_not_contains "$replay" "leading routine" "startup replay exposed the leading routine row"
   assert_not_contains "$replay" "captain must render in Pi" "startup replay rendered the captain row"
   assert_not_contains "$replay" "routine behind captain" "startup replay crossed the captain barrier"
   [ "$(cat "$home/state/.branch-outcomes-cursor")" = 1 ] || fail "cursor crossed the captain barrier"
@@ -837,6 +837,39 @@ test_branch_cannot_force_teardown_or_directly_relaunch() {
   pass "the branch cannot force a teardown or bypass fm-control for a relaunch"
 }
 
+test_review_receipt_requires_successful_settlement() {
+  local home receipt row found
+  home="$TMP_ROOT/review-receipt-home"
+  mkdir -p "$home/state"
+  receipt=$(printf 'a%.0s' {1..64})
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task task-1 --verdict captain \
+    --summary 'actionable result remains unprocessed' --receipt "$receipt" >/dev/null || fail "receipt append failed"
+  found=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" receipt "$receipt") || fail "provisional lookup failed"
+  [ -z "$found" ] || fail "a report without successful prompt settlement authorized replay"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" reviewed "$receipt" || fail "review completion failed"
+  row=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" receipt "$receipt") || fail "settled lookup failed"
+  [ -n "$row" ] || fail "successful settlement did not authorize exact replay"
+  found=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread) || fail "unread lookup failed"
+  [ "$found" = "$row" ] || fail "review completion advanced presentation"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" mark-read --through 1 || fail "visible outcome acknowledgement failed"
+  found=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unprocessed) || fail "unprocessed lookup failed"
+  [ "$found" = "$row" ] || fail "review completion consumed actionable processing"
+  printf 'invalid receipt\n' > "$home/state/.task-1.branch-review-receipt"
+  found=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" receipt "$receipt") || fail "unknown receipt lookup failed"
+  [ -z "$found" ] || fail "malformed completion receipt authorized replay"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" reviewed "$receipt" || fail "review repair failed"
+  FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" append --task task-1 --verdict routine \
+    --summary 'report from an interrupted retry' --receipt "$receipt" >/dev/null || fail "second report failed"
+  found=$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" receipt "$receipt") || fail "retry lookup failed"
+  [ -z "$found" ] || fail "older completion receipt covered a later interrupted report"
+  printf 'broken store\n' >> "$home/state/branch-outcomes.jsonl"
+  if FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" receipt "$receipt" >/dev/null 2>&1; then
+    fail "corrupt store authorized receipt lookup"
+  fi
+  pass "exact review receipts require successful settlement and preserve actionable processing"
+}
+
+test_review_receipt_requires_successful_settlement
 test_branch_prompt_is_byte_stable_and_above_cache_floor
 test_outcome_store_is_append_only_with_cursor_reads
 test_outcome_startup_replay_preserves_silence

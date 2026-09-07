@@ -993,3 +993,71 @@ if [ "$status" -ne 0 ] || [ "$out" != "STREAM_OK" ]; then
   fail "real-SDK streaming-time watcher delivery guard failed against pi-coding-agent $PI_VERSION: $out"
 fi
 pass "real Pi SDK $PI_VERSION queues a streaming-time watcher wake without before_agent_start, keeps the successor chain, and surfaces consumption of both follow-ups"
+
+# Request-count proof against the real Pi model loop and tool registry.
+# Two concurrently offered deliveries share one report, without an ack from
+# the scripted provider. The replay must use durable evidence, not another
+# provider call. Future stale events and new answers still require review.
+replayhome="$TMP_ROOT/replay-home"
+replayagent="$TMP_ROOT/replay-agent"
+mkdir -p "$replayhome/state" "$replayhome/config" "$replayagent"
+cat > "$replayagent/models.json" <<'JSON'
+{"providers":{"fm-repro":{"baseUrl":"https://fm-repro.invalid/v1","api":"openai-completions","apiKey":"placeholder","models":[{"id":"probe","name":"probe","contextWindow":200000,"maxTokens":512}]}}}
+JSON
+BRANCH_PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" \
+  DISPATCH_PLUGIN="$repo/.pi/extensions/lib/fm-branch-dispatch.ts" \
+  FM_HOME="$replayhome" FM_ROOT_OVERRIDE="$ROOT" PI_CODING_AGENT_DIR="$replayagent" PI_OFFLINE=1 \
+  node --input-type=module > "$TMP_ROOT/replay-output" 2>&1 <<'EOF'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const home=process.env.FM_HOME;
+writeFileSync(`${home}/state/.lock`, `${process.pid}\n`);
+writeFileSync(`${home}/state/probe.meta`, `project=${home}/project\nwindow=fm-probe\nspawn_gen=probe-1\n`);
+writeFileSync(`${home}/state/probe.status`, 'working: synthetic review\n');
+writeFileSync(`${home}/state/.wake-queue`, '1\t1\tsignal\tprobe.status\tsignal: probe.status\n');
+writeFileSync(`${home}/state/.wake-queue.seq`, '1\n');
+let requests=0;
+globalThis.fetch=async(input,options)=>{
+ const url=String(input instanceof Request ? input.url : input);
+ if(!url.startsWith('https://fm-repro.invalid/')) throw Error(`Unexpected transport ${url}`);
+ requests++;
+ const tool=requests%2===1;
+ const delta=tool ? {role:'assistant', tool_calls:[{index:0,id:`report-${requests}`,type:'function',function:{name:'fm_branch_report',arguments:JSON.stringify({task:'probe',verdict:'routine',summary:'The worker remains healthy.'})}}]} : {role:'assistant',content:'Review complete.'};
+ const chunk={id:`response-${requests}`,object:'chat.completion.chunk',created:1,model:'probe',choices:[{index:0,delta,finish_reason:null}]};
+ const end={...chunk,choices:[{index:0,delta:{},finish_reason:tool?'tool_calls':'stop'}]};
+ return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(end)}\n\ndata: [DONE]\n\n`, {headers:{'content-type':'text/event-stream'}});
+};
+const handlers=new Map(),bus=new Map(),notes=[];
+const entries=[];
+const pi={on:(n,f)=>{handlers.set(n,[...(handlers.get(n)||[]),f]);},events:{on:(n,f)=>bus.set(n,f)}, registerTool(){},registerCommand(){},registerMessageRenderer(){},registerEntryRenderer(){},appendEntry:(customType,data)=>entries.push({type:'custom',customType,data}),sendMessage:(m,o)=>notes.push({m,o}),getThinkingLevel:()=> 'off'};
+const ctx={model:{provider:'fm-repro',id:'probe'},sessionManager:{getSessionFile:()=>`${home}/main.jsonl`,getEntries:()=>entries}};
+const ext=await import(pathToFileURL(process.env.BRANCH_PLUGIN));
+ext.default(pi);
+for(const f of handlers.get('session_start')||[]) await f({reason:'startup'},ctx);
+const dispatch=await import(pathToFileURL(process.env.DISPATCH_PLUGIN));
+const offer=async()=>{
+ const o=dispatch.createBranchDispatchOffer('signal: probe.status',[`${home}/project`],false,true);
+ bus.get(dispatch.FM_BRANCH_DISPATCH_EVENT)(o);
+ if(!o.accepted)throw Error('Offer refused');
+ await o.settlement;
+};
+await Promise.all([offer(),offer()]);
+if(requests!==2)throw Error(`Duplicate delivery made ${requests} provider requests instead of two total`);
+await offer();
+if(requests!==2)throw Error('Post-ack duplicate made a request');
+if(notes.length!==0)throw Error('Routine outcome entered main context');
+if(readFileSync(`${home}/state/branch-outcomes.jsonl`,'utf8').trim().split('\n').length!==1)throw Error('Duplicate outcome stored');
+writeFileSync(`${home}/state/.wake-queue`, '2\t2\tstale\tfm-probe\tstale: fm-probe (possible wedge)\n');
+await offer();
+if(requests!==4)throw Error('Future genuine stale review did not reach provider');
+writeFileSync(`${home}/state/probe.status`, 'note: an unread answer\nworking: trailing routine\n');
+await offer();
+if(requests!==6)throw Error('New answer behind routine did not reach provider');
+console.log('REPLAY_REQUESTS_OK first=2 duplicate=0 post_ack=0 future_stale=2 new_answer=2 routine_messages=0');
+for(const f of handlers.get('session_shutdown')||[])await f({reason:'quit'},ctx);
+EOF
+status=$?
+out=$(cat "$TMP_ROOT/replay-output")
+[ "$status" -eq 0 ] || fail "real Pi SDK $PI_VERSION replay request guard: $out"
+printf '%s\n' "$out"
+pass "real Pi SDK $PI_VERSION makes no provider request for exact review replays and keeps future stale and answer reviews"

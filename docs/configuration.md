@@ -25,6 +25,29 @@ Wake, watcher, away-mode, and Relay-specific state mechanics remain with their n
 `AGENTS.md` retains the run-once and read-once operator rules, lock-refusal safety, installation consent, and direct-report recovery boundaries because those facts apply at every session start.
 Ordinary dead-direct-report recovery is owned by `stuck-crewmate-recovery`, while persistent-secondmate recovery is owned by `secondmate-provisioning`.
 
+## Pi status footer
+
+The Firstmate Pi status extension adds compact rows below the editor while leaving Pi's stock footer in place.
+It shows the current session model, effective reasoning effort, and context percent used from Pi's session APIs.
+Context is separate from account quota; Pi may estimate trailing context and report unknown usage after compaction until a new response supplies usage.
+The stock directory, branch, session name, token/cache totals, cost, and other extension statuses remain available.
+Calm's preference and transcript presentation do not change these rows.
+
+For Pi's standard Codex and Anthropic provider endpoints, the extension reads the installed `quota-axi --provider <provider> --json` surface.
+Each supplied window keeps its normalized label, percent USED, percent LEFT, and reset countdown; model windows retain a model qualifier.
+An absent Codex account short window is explicitly unavailable.
+Other providers or custom endpoints show unavailable and cannot inherit the previous provider's quota.
+The quota-axi account's relationship to Pi is always labeled unverified: Pi's nonsecret model metadata establishes a provider surface, but does not establish a shared account or billing scope.
+In particular, Claude Code plan windows are not proof of Pi subscription allowance.
+No identity or credential is shown, read by this extension, or used to create a new login flow.
+
+Quota reads are asynchronous, bounded, cached, and cancelled with the session; countdown changes are local display updates.
+Old readings carry explicit STALE labels, elapsed reset windows become unknown, and errors or missing evidence never become a synthetic allowance.
+Display refresh does not invoke a model or write session or Firstmate status events.
+The source owner for parsing, refresh bounds, and subprocess cleanup is `.pi/extensions/lib/fm-quota-status.ts`; `.pi/extensions/fm-primary-status.ts` owns the below-editor widget and its lifecycle.
+The public-interface and isolated Pi SDK regressions run with `bin/fm-test-run.sh tests/fm-pi-status.test.sh tests/fm-pi-primary-types.test.sh`.
+These project extensions are discovered at an ordinary trusted Pi launch after landed code is applied through [the update skill](../.agents/skills/updatefirstmate/SKILL.md).
+
 ## Pi Calm preference (config/calm)
 
 The Pi Calm extension stores the captain's home-local presentation choice in gitignored `config/calm` under the effective Firstmate home, resolved from `FM_HOME`, then `FM_ROOT_OVERRIDE`, then the tracked code root derived from the extension path, or under `FM_CONFIG_OVERRIDE` when that test and specialized-setup override is present.

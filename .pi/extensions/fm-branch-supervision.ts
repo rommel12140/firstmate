@@ -99,6 +99,7 @@ import {
   FM_BRANCH_DISPATCH_EVENT,
   releaseEligibleRowsSnapshot,
   scopeForUnreadWake,
+  wakeReviewReceipt,
   writeEligibleRowsSnapshot,
   type BranchDispatchOffer,
 } from "./lib/fm-branch-dispatch.ts";
@@ -572,6 +573,7 @@ export default function (pi: ExtensionAPI) {
   // never named is never stored or delivered. Null outside a wake prompt and
   // during a heartbeat review, which is not scoped by task.
   let wakeTaskScope: { rows: string[]; tasks: Set<string> } | null = null;
+  let reviewReceipt: { key: string; task: string } | null = null;
   let mainStreaming = false;
   let shuttingDown = false;
   // Bumps at every session replacement so a stale chain continuation from the
@@ -882,16 +884,6 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  function deliverRoutineOutcome(row: OutcomeRow): void {
-    const message = {
-      customType: "fm-branch-merge",
-      content: `${MERGE_NOTE_BOAT} ${row.task}: ${row.summary}`,
-      display: !(row.task === "fleet" && row.silent),
-    };
-    if (mainStreaming) pi.sendMessage(message, { deliverAs: "nextTurn" });
-    else pi.sendMessage(message, {});
-  }
-
   // Captain rows that are read (their visible entry exists) but not yet
   // acknowledged as processed by main, in sequence order. null means the store
   // could not be read safely, never "nothing".
@@ -1010,22 +1002,10 @@ export default function (pi: ExtensionAPI) {
         // unread and deliver it a second time; the cursor records that the
         // row WAS delivered, which stays true across a replacement.
         if (!(await generationOwnsLock(expectedGeneration))) return false;
-        // KNOWN PRE-EXISTING LIMITATION, unchanged by moving this work off Pi's
-        // render thread and tracked as
-        // fm-pi-routine-delivery-idempotency-followup-r1: if the mark-read
-        // below fails after a ROUTINE note was already delivered, the row stays
-        // unread and the next reconciliation sends that note a second time,
-        // because a routine note is a plain message with no sequence-keyed
-        // record to recognize. A captain row cannot duplicate that way -
-        // ensureVisibleCaptainOutcome finds its own earlier entry by store
-        // sequence. Closing the routine gap needs a durable, idempotent
-        // representation for routine delivery, which changes the delivery
-        // contract rather than this ordering, so it is deliberately not done
-        // here.
+        // Routine outcomes stay in the private durable store. No transcript
+        // message, model context, or follow-up turn is needed to consume one.
         if (row.verdict === "captain") {
           if (!ensureVisibleCaptainOutcome(row)) return false;
-        } else {
-          deliverRoutineOutcome(row);
         }
         if (!(await runOutcomeScript(["mark-read", "--through", String(row.seq)])).ok) return false;
       }
@@ -1046,7 +1026,7 @@ export default function (pi: ExtensionAPI) {
       name: "fm_branch_report",
       label: "Report supervision outcome",
       description:
-        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge it into the captain-facing main conversation. verdict captain persists an exact visible entry and opens one sequence-keyed processing turn on main that stays open until main acknowledges it; routine notes render unless silent marks a no-change heartbeat.",
+        "Record the outcome of one handled fleet event: write it durably to the outcome store, then merge it into the captain-facing main conversation. verdict captain persists an exact visible entry and opens one sequence-keyed processing turn on main that stays open until main acknowledges it; routine outcomes remain in the private store without a main message.",
       parameters: Type.Object({
         task: Type.String({ description: "The task id the event belongs to (or 'fleet' for fleet-wide events)" }),
         verdict: Type.Union([Type.Literal("routine"), Type.Literal("captain")], {
@@ -1059,7 +1039,7 @@ export default function (pi: ExtensionAPI) {
         }),
         wake: Type.Optional(Type.String({ description: "The wake reason line this outcome answers" })),
         silent: Type.Optional(Type.Boolean({
-          description: "True only when a fleet-wide heartbeat review found literally nothing worth reporting; omit or use false whenever any action was taken or any routine result is worth a note",
+          description: "Optional legacy annotation for an unchanged routine fleet heartbeat; all routine outcomes remain private",
         })),
       }),
       execute: async (_toolCallId, params) => {
@@ -1082,6 +1062,10 @@ export default function (pi: ExtensionAPI) {
         }
         const appendArgs = ["append", "--task", task, "--verdict", verdict, "--summary", summary, "--silent", String(silent)];
         if (wake) appendArgs.push("--wake", wake);
+        if (reviewReceipt?.task === task &&
+            wakeReviewReceipt(state, scopeForUnreadWake(state, false))?.key === reviewReceipt.key) {
+          appendArgs.push("--receipt", reviewReceipt.key);
+        }
         // Ownership, the durable append, and the delivery it authorizes are
         // ONE unit of the delivery queue: store-before-visible-delivery and
         // this report's place in sequence order are exactly what another
@@ -1355,17 +1339,34 @@ ${context.command}
         );
         if (grant === "main-owned") throw new Error("the wake rows are already claimed by main");
         if (grant !== "published") throw new Error("could not record the branch's eligible row snapshot");
+        const receipt = heartbeat ? null : wakeReviewReceipt(state, scope);
+        if (receipt) {
+          const previous = await runOutcomeScript(["receipt", receipt.key]);
+          if (!previous.ok) throw new Error("could not check the handled wake receipt");
+          if (previous.stdout && wakeReviewReceipt(state, scope)?.key === receipt.key) {
+            if (!(await actingAsOwner(acceptedGeneration))) throw new Error("supervision session lost ownership before replay acknowledgement");
+            const ack = await runCommandAsync("bash", [wakeGrantScript, "acknowledge", String(acceptedGeneration),
+              String(Math.max(...scope.eligibleSeqs.map(Number)))], { env: scriptEnv });
+            if (ack.status !== 0) throw new Error("could not acknowledge the already handled wake");
+            if (!(await releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration)))) {
+              throw new Error("could not release the replay grant");
+            }
+            return;
+          }
+        }
         // A row can still arrive between this re-check and the model starting
         // the drain; that residual is accepted by the confused-agent-grade boundary.
         const reportRevisionBeforePrompt = durableReportRevision;
         const entryOffset = sessionManager.getEntries().length;
         wakeTaskScope = heartbeat ? null : { rows: [...scope.eligibleSeqs], tasks: new Set(scope.eligibleTasks) };
+        reviewReceipt = receipt;
         try {
           await session.prompt(
             `FIRSTMATE SUPERVISION WAKE: ${message}\n\nHandle this per your operating procedure and finish with fm_branch_report.`,
           );
         } finally {
           wakeTaskScope = null;
+          reviewReceipt = null;
         }
         const providerError = settledPromptProviderError(sessionManager, entryOffset);
         if (providerError) {
@@ -1380,6 +1381,12 @@ ${context.command}
         }
         if (durableReportRevision <= reportRevisionBeforePrompt) {
           throw new Error("supervision branch prompt settled but produced no durable outcome for its claimed wake rows");
+        }
+        if (receipt && wakeReviewReceipt(state, scope)?.key === receipt.key) {
+          if (!(await actingAsOwner(acceptedGeneration))) throw new Error("supervision session lost ownership before review completion");
+          if (!(await runOutcomeScript(["reviewed", receipt.key])).ok) {
+            throw new Error("could not record successful wake review completion");
+          }
         }
         recordDurableBranchReport(branchForWake.generation, branchForWake.selectionRevision);
         if (!(await releaseEligibleRowsSnapshot(state, wakeGrantScript, String(acceptedGeneration)))) {

@@ -1411,9 +1411,9 @@ EOF
     || fail "could not seed the live lease"
 
   out=$(run_pi_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  assert_contains "$out" "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):" \
-    "locked start did not replay the leading routine branch outcome"
-  assert_contains "$out" "worker recovered automatically" "replayed routine outcome lost its content"
+  assert_not_contains "$out" "BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):" \
+    "locked start exposed the leading routine branch outcome"
+  assert_not_contains "$out" "worker recovered automatically" "startup exposed routine outcome content"
   assert_not_contains "$out" "https://example.com/pr/b" "locked start crossed the captain delivery barrier"
   assert_contains "$(FM_HOME="$home" "$ROOT/bin/fm-branch-outcome.sh" unread)" \
     "https://example.com/pr/b" "locked start marked the unrendered captain outcome read"

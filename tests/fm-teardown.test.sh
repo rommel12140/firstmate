@@ -657,7 +657,9 @@ test_local_only_truly_unpushed_refuses() {
   case_dir=$(make_case truly-unpushed)
   write_meta "$case_dir" local-only ship
   wt_commit "$case_dir" "unpushed work"
-  # No fork, no push to origin, not merged into main.
+  # A terminal status cannot prove landing: no fork, push, or merge exists.
+  printf 'done: worker finished but its commit is unlanded\n' > "$case_dir/state/task-x1.status"
+  printf 'private successful review\n' > "$case_dir/state/.task-x1.branch-review-receipt"
 
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -666,6 +668,7 @@ test_local_only_truly_unpushed_refuses() {
 
   expect_code 1 "$rc" "truly-unpushed: teardown should refuse"
   grep -q REFUSED "$case_dir/stderr" || fail "truly-unpushed: no REFUSED line in stderr"
+  [ -f "$case_dir/state/.task-x1.branch-review-receipt" ] || fail "refused teardown removed its review receipt"
   pass "local-only worktree with truly unpushed work is refused (safety preserved)"
 }
 
@@ -743,6 +746,7 @@ test_squash_merged_branch_deleted_allows() {
   pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   add_gh_pr_merged_for_head "$case_dir" "$pr_head"
 
+  printf 'private successful review\n' > "$case_dir/state/.task-x1.branch-review-receipt"
   set +e
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -750,6 +754,7 @@ test_squash_merged_branch_deleted_allows() {
 
   expect_code 0 "$rc" "squash-merged: teardown should succeed when the PR is merged"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-merged: teardown printed a REFUSED line"
+  assert_absent "$case_dir/state/.task-x1.branch-review-receipt" "landed teardown left its Pi review receipt"
   pass "squash-merged + deleted-branch worktree (PR merged) is torn down (the fix)"
 }
 

@@ -6,7 +6,15 @@
 #   - Store: $STATE/branch-outcomes.jsonl, strictly APPEND-ONLY. One JSON
 #     object per line: {"seq":N,"epoch":N,"task":"...","wake":"...",
 #     "verdict":"routine"|"captain","summary":"...","silent":true|false,
-#     "statusEndpoint":N,"statusIdent":"..."}. Legacy rows without `silent`
+#     "statusEndpoint":N,"statusIdent":"..."}, optionally with "receipt":SHA256.
+#     A receipt binds one unchanged task-local Pi review to its exact queued
+#     event sequences and task/status identity; Pi owns construction and replay
+#     eligibility in .pi/extensions/lib/fm-branch-dispatch.ts. A receipt is only
+#     usable after reviewed publishes that successful turn's exact row to
+#     $STATE/.<task>.branch-review-receipt (one latest receipt per task).
+#     A failed continuation or crash before that publication is never proof.
+#     It never covers a
+#     new sequence or heartbeat. Legacy rows without `silent`
 #     or status provenance remain valid and are treated as visible.
 #     Every read and append validates the complete log as a gap-free sequence;
 #     malformed, duplicate, or reordered rows fail closed.
@@ -59,8 +67,13 @@
 #
 # Usage:
 #   fm-branch-outcome.sh append --task <id> --verdict routine|captain \
-#       --summary <text> [--wake <text>] [--silent true|false]
+#       --summary <text> [--wake <text>] [--silent true|false] [--receipt <sha256>]
 #     Append one outcome record; prints the assigned seq.
+#   fm-branch-outcome.sh receipt <sha256>
+#     Print a matching successfully settled review after validating the store.
+#   fm-branch-outcome.sh reviewed <sha256>
+#     After a successful Pi prompt, atomically bind its latest matching report.
+#     No matching report is a conservative no-op (changed evidence at report).
 #   fm-branch-outcome.sh unread
 #     Print every unread record (raw JSONL). Exit 0 with no output when none.
 #   fm-branch-outcome.sh mark-read --through <seq>
@@ -82,9 +95,9 @@
 #   fm-branch-outcome.sh list [--recent <n>]
 #     Print the last n records (default 20), read or not.
 #   fm-branch-outcome.sh startup-replay
-#     Session-start recovery: print the leading routine unread records under a
-#     labeled header into the locked startup digest, skip rows whose `silent`
-#     field is true, and mark those leading routine rows read. Stop before the
+#     Session-start recovery: consume the leading routine unread records
+#     privately without rendering them into the locked startup digest.
+#     Mark those leading routine rows read. Stop before the
 #     first captain row because only Pi's sequence-keyed visible entry may
 #     acknowledge that row. Prints nothing when nothing replayable is unread.
 #     Run it only when the session holds the lock (fm-session-start.sh owns the
@@ -107,7 +120,7 @@ OUTCOME_INDEX_MAX_BYTES=512
 OUTCOME_INDEX_READY="$STATE/.branch-outcome-index-ready"
 
 usage() {
-  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | list [--recent <n>] | startup-replay" >&2
+  echo "usage: fm-branch-outcome.sh append --task <id> --verdict routine|captain --summary <text> [--wake <text>] [--silent true|false] [--receipt <sha256>] | receipt <sha256> | reviewed <sha256> | unread | mark-read --through <seq> | unprocessed | mark-processed --through <seq> | processed-init [--held-lock] | list [--recent <n>] | startup-replay" >&2
   exit 2
 }
 
@@ -183,7 +196,9 @@ last_seq() {
         keys == ["epoch", "seq", "summary", "task", "verdict", "wake"]
         or (keys == ["epoch", "seq", "silent", "summary", "task", "verdict", "wake"] and (.silent | type) == "boolean")
         or (
-          keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"]
+          ((keys == ["epoch", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"])
+           or (keys == ["epoch", "receipt", "seq", "silent", "statusEndpoint", "statusIdent", "summary", "task", "verdict", "wake"]
+             and (.receipt | type == "string" and test("^[a-f0-9]{64}$"))))
           and (.silent | type) == "boolean"
           and ((.statusEndpoint | type) == "number" and .statusEndpoint >= 0 and .statusEndpoint <= 9007199254740991 and .statusEndpoint == (.statusEndpoint | floor))
           and ((.statusIdent | type) == "string" and (.statusIdent | test("[\\t\\n]") | not))
@@ -427,6 +442,7 @@ case "$CMD" in
     SUMMARY=''
     WAKE=''
     SILENT=false
+    RECEIPT=''
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --task) TASK=${2:-}; shift 2 || usage ;;
@@ -434,6 +450,7 @@ case "$CMD" in
         --summary) SUMMARY=${2:-}; shift 2 || usage ;;
         --wake) WAKE=${2:-}; shift 2 || usage ;;
         --silent) SILENT=${2:-}; shift 2 || usage ;;
+        --receipt) RECEIPT=${2:-}; shift 2 || usage ;;
         *) usage ;;
       esac
     done
@@ -446,6 +463,9 @@ case "$CMD" in
       echo "error: silent outcomes must be routine fleet outcomes" >&2
       exit 2
     fi
+    if [ -n "$RECEIPT" ]; then
+      [[ "$RECEIPT" =~ ^[a-f0-9]{64}$ ]] || usage
+    fi
     fm_lock_acquire_wait "$LOCK"
     if ! LAST_SEQ=$(last_seq); then
       fm_lock_release "$LOCK"
@@ -457,13 +477,17 @@ case "$CMD" in
       echo "error: refusing append because the outcome cursor is invalid or ahead of the store" >&2
       exit 1
     fi
+    RECEIPT_FIELD=''
+    if [ -n "$RECEIPT" ]; then
+      RECEIPT_FIELD=",\"receipt\":\"$RECEIPT\""
+    fi
     SEQ=$(( LAST_SEQ + 1 ))
     capture_status_position "$TASK"
     rm -f -- "$OUTCOME_INDEX_READY" || { fm_lock_release "$LOCK"; exit 1; }
-    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s"}\n' \
+    printf '{"seq":%s,"epoch":%s,"task":"%s","wake":"%s","verdict":"%s","summary":"%s","silent":%s,"statusEndpoint":%s,"statusIdent":"%s"%s}\n' \
       "$SEQ" "$(date +%s)" "$(json_escape "$TASK")" "$(json_escape "$WAKE")" \
       "$VERDICT" "$(json_escape "$SUMMARY")" "$SILENT" "$CAPTURED_STATUS_ENDPOINT" \
-      "$(json_escape "$CAPTURED_STATUS_IDENT")" >> "$STORE"
+      "$(json_escape "$CAPTURED_STATUS_IDENT")" "$RECEIPT_FIELD" >> "$STORE"
     # A task with neither a live meta nor a status log is retired: the branch
     # reports the teardown it just performed, and writing the index here would
     # recreate the footprint teardown removed. The outcome itself is still
@@ -481,6 +505,43 @@ case "$CMD" in
     fi
     fm_lock_release "$LOCK"
     printf '%s\n' "$SEQ"
+    ;;
+  receipt|reviewed)
+    [ "$#" -eq 1 ] && [[ "$1" =~ ^[a-f0-9]{64}$ ]] || usage
+    fm_lock_acquire_wait "$LOCK" || exit 1
+    if ! last_seq >/dev/null; then
+      fm_lock_release "$LOCK"
+      echo "error: refusing receipt operation because the outcome store is malformed" >&2
+      exit 1
+    fi
+    MATCH=''
+    if [ -s "$STORE" ]; then
+      MATCH=$(jq -sc --arg receipt "$1" '[.[] | select(.receipt == $receipt)] | last // empty' "$STORE") || {
+        fm_lock_release "$LOCK"; exit 1;
+      }
+    fi
+    if [ -n "$MATCH" ]; then
+      TASK=$(printf '%s\n' "$MATCH" | jq -r '.task')
+      outcome_index_path "$TASK" >/dev/null || { fm_lock_release "$LOCK"; exit 1; }
+      RECEIPT_PATH="$STATE/.$TASK.branch-review-receipt"
+      if [ "$CMD" = receipt ]; then
+        if [ -f "$RECEIPT_PATH" ] && [ ! -L "$RECEIPT_PATH" ] &&
+            [ "$(cat "$RECEIPT_PATH")" = "$MATCH" ]; then
+          printf '%s\n' "$MATCH"
+        fi
+      else
+        # A report alone is not success: Pi calls this only after its provider
+        # turn settles without error and current session ownership is proven.
+        RECEIPT_TMP=$(mktemp "$STATE/.branch-review-receipt.XXXXXX") || { fm_lock_release "$LOCK"; exit 1; }
+        if ! chmod 0600 "$RECEIPT_TMP" || ! printf '%s\n' "$MATCH" > "$RECEIPT_TMP" ||
+            ! mv -f -- "$RECEIPT_TMP" "$RECEIPT_PATH"; then
+          rm -f -- "$RECEIPT_TMP"
+          fm_lock_release "$LOCK"
+          exit 1
+        fi
+      fi
+    fi
+    fm_lock_release "$LOCK"
     ;;
   unread)
     [ "$#" -eq 0 ] || usage
@@ -623,11 +684,6 @@ case "$CMD" in
         | ($verdicts | index("captain")) as $captain
         | .[0:($captain // length)][]
       ')
-      VISIBLE=$(printf '%s\n' "$REPLAYABLE" | jq -c 'select(.silent != true)')
-      if [ -n "$VISIBLE" ]; then
-        printf 'BRANCH OUTCOMES (handled by the supervision branch, not yet seen by this session):\n'
-        printf '%s\n' "$VISIBLE"
-      fi
       LAST=$(record_seq "$(printf '%s\n' "$REPLAYABLE" | tail -n 1)")
       if [ -n "$LAST" ] && ! advance_cursor "$LAST"; then
         fm_lock_release "$LOCK"
