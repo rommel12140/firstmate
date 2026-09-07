@@ -606,6 +606,11 @@ export default function (pi: ExtensionAPI) {
     // also let a check-kind trigger itself slip past main's delivery.
     const isCheckTrigger = /^check:/.test(message);
     const scope = scopeForUnreadWake(state, heartbeat);
+    // Producers enqueue before printing an ordinary reason. A readable empty
+    // queue therefore proves this delayed close was already consumed. Failure,
+    // check, malformed, and missing-queue evidence still goes to main.
+    if (!isCheckTrigger && /^(signal:|stale:|heartbeat($|:))/.test(message) &&
+        !message.includes("watcher: FAILED") && scope.status === "empty") return Promise.resolve();
     // A signal close containing a needs-decision status file, or a stale close
     // for a captain-held task, gets the identical main-only treatment as a
     // check-kind trigger. The cross-reference deliberately includes every

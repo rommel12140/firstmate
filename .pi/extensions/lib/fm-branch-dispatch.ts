@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { runCommandAsync } from "./fm-async-exec.ts";
 
@@ -190,6 +191,8 @@ function hasOpenNeedsDecision(
 export function scopeForUnreadWake(state: string, heartbeat: boolean): UnreadWakeScope {
   let queue = "";
   try {
+    const file = lstatSync(`${state}/.wake-queue`);
+    if (!file.isFile() || file.isSymbolicLink()) return UNSAFE_SCOPE;
     queue = readFileSync(`${state}/.wake-queue`, "utf8");
   } catch {
     return UNSAFE_SCOPE;
@@ -335,6 +338,43 @@ export function scopeForUnreadWake(state: string, heartbeat: boolean): UnreadWak
     needsDecisionKeys,
     taskByWakeKey: Object.fromEntries(taskByKey),
   };
+}
+
+// A receipt identifies an already handled delivery, never a future health
+// review. New sequence numbers always get new receipts, even with identical
+// status. Unknown, replaced, truncated, or oversized evidence gets no receipt.
+export function wakeReviewReceipt(state: string, scope: UnreadWakeScope): { key: string; task: string } | null {
+  if (!scope.eligible || scope.corrupted || scope.eligibleTasks.length !== 1 || !scope.eligibleSeqs.length) return null;
+  if (scope.eligibleSeqs.some(seq => !/^[1-9][0-9]*$/.test(seq) || !Number.isSafeInteger(Number(seq)))) return null;
+  const task = scope.eligibleTasks[0];
+  if (!/^[A-Za-z0-9._-]+$/.test(task)) return null;
+  try {
+    const queueFile = lstatSync(`${state}/.wake-queue`);
+    if (!queueFile.isFile() || queueFile.isSymbolicLink()) return null;
+    const wanted = new Set(scope.eligibleSeqs);
+    const rows = readFileSync(`${state}/.wake-queue`, "utf8").split("\n")
+      .filter((row) => wanted.has(row.split("\t")[1]));
+    if (rows.length !== wanted.size ||
+        new Set(rows.map(row => row.split("\t")[1])).size !== wanted.size ||
+        rows.some(row => !["signal", "stale"].includes(row.split("\t")[2]))) return null;
+    const parts = ["fm-pi-review-v1", task, ...rows];
+    for (const suffix of ["meta", "status"]) {
+      const path = `${state}/${task}.${suffix}`;
+      const before = lstatSync(path);
+      if (!before.isFile() || before.isSymbolicLink() || before.size > 1024 * 1024) return null;
+      const version = statusFileVersion(path);
+      const contents = readFileSync(path, "utf8");
+      if (version !== statusFileVersion(path)) return null;
+      if (suffix === "meta") {
+        const incarnations = contents.split(/\r?\n/).filter(line => line.startsWith("spawn_gen="));
+        if (incarnations.length !== 1 || !/^spawn_gen=[A-Za-z0-9._-]+$/.test(incarnations[0])) return null;
+      }
+      parts.push(version!, contents);
+    }
+    return { task, key: createHash("sha256").update(JSON.stringify(parts)).digest("hex") };
+  } catch {
+    return null;
+  }
 }
 
 // The exact state-relative filename bin/fm-wake-drain.sh reads for a
