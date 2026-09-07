@@ -610,7 +610,10 @@ function dispatch(message, projects, heartbeat, eligible) {
   return offer;
 }
 async function settle(predicate, label) {
-  for (let i = 0; i < 250; i += 1) {
+  // Intermediate states have no settlement promise. Shell-backed work needs
+  // loaded-host headroom; use a monotonic clock because provider tests mock Date.now.
+  const deadline = performance.now() + 30_000;
+  while (performance.now() < deadline) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -707,15 +710,10 @@ finishWakePrompt();
 // wait for the wake to settle so its task scope has been cleared.
 await offer.settlement;
 globalThis.__fmOnBranchPrompt = undefined;
-if (sentToMain.length !== 1) throw new Error("routine report did not merge exactly one note");
-if (sentToMain[0].message.customType !== "fm-branch-merge") throw new Error("merge note has the wrong custom type");
-if (sentToMain[0].options.triggerTurn) throw new Error("routine idle merge must not trigger a turn");
-if (sentToMain[0].options.deliverAs) throw new Error("routine idle merge must append immediately");
+if (sentToMain.length !== 0) throw new Error("routine report entered main context");
 await fire("agent_start", {});
 await report.execute("call-2", { task: "task-9", verdict: "routine", summary: "still healthy" }, undefined, undefined, {});
-if (sentToMain[1].options.deliverAs !== "nextTurn" || sentToMain[1].options.triggerTurn) {
-  throw new Error(`routine busy merge must defer to nextTurn without a turn: ${JSON.stringify(sentToMain[1].options)}`);
-}
+if (sentToMain.length !== 0) throw new Error("busy routine report queued a main message");
 await fire("agent_end", {});
 await report.execute("call-3", { task: "task-9", verdict: "captain", summary: "PR https://example.com/pr/9 checks green, ready for review" }, undefined, undefined, {});
 // A captain outcome opens exactly ONE sequence-keyed processing turn: a
@@ -734,20 +732,9 @@ if (!processingRequest.message.content.includes("[seq 3] task-9: PR https://exam
 if (sentToMain.some((sent) => sent.options.triggerTurn && sent.message.customType !== "fm-branch-process")) {
   throw new Error("an unkeyed turn opened on main");
 }
-if (sentToMain.length !== 3) throw new Error(`captain delivery changed routine delivery: ${JSON.stringify(sentToMain)}`);
+if (sentToMain.length !== 1) throw new Error(`captain delivery changed routine delivery: ${JSON.stringify(sentToMain)}`);
 writeFileSync(`${home}/state/delivered-processing-request`, processingRequest.message.content);
-if (typeof sentToMain[0].message.content !== "string" || !sentToMain[0].message.content.startsWith("⛵ ")) {
-  throw new Error(`routine note missing sailboat prefix: ${sentToMain[0].message.content}`);
-}
-if (/branch merged|\[routine\]|\[captain\]/.test(sentToMain[0].message.content)) {
-  throw new Error(`routine note still has boilerplate: ${sentToMain[0].message.content}`);
-}
-// A routine note is rendered as a custom message. A captain outcome is a
-// versioned custom session entry whose exact store summary is its payload.
-if (sentToMain[0].message.display !== true) {
-  throw new Error(`routine note must render: display=${sentToMain[0].message.display}`);
-}
-writeFileSync(`${home}/state/delivered-routine-note`, sentToMain[0].message.content);
+// Only captain outcomes enter the visible transcript.
 const captainEntries = mainEntries.filter((entry) => entry.customType === "fm-branch-visible-outcome");
 if (captainEntries.length !== 1) throw new Error(`captain delivery count was ${captainEntries.length}, not 1`);
 const captainRecord = captainEntries[0].data;
@@ -866,7 +853,7 @@ const assertRenderedNote = (note, glyph) => {
     throw new Error(`note remainder must be dim: ${JSON.stringify(fgCalls)}`);
   }
 };
-assertRenderedNote(sentToMain[0].message.content, "⛵");
+assertRenderedNote("⛵ legacy: historical routine note", "⛵");
 const captainRendered = entryRenderers.get("fm-branch-visible-outcome")(
   captainEntries[0],
   { expanded: false },
@@ -905,10 +892,7 @@ EOF
     *"do not re-drain, re-run, or acknowledge the wake."*"call fm_branch_processed with through=3 exactly once."*"never counts as processing."*) ;;
     *) fail "the processing request body lost the event-ownership boundary or the sequence-bound acknowledgement duty: $body" ;;
   esac
-  if ./bin/fm-operational-input.sh kind < "$home/state/delivered-routine-note" >/dev/null 2>&1; then
-    fail "routine note must stay plain rendered text, not typed operational input"
-  fi
-  pass "a captain outcome reaches main's model as one typed, sequence-keyed processing request while routine notes stay plain"
+  pass "captain outcomes keep typed processing requests while routine outcomes remain private"
 }
 
 test_requested_healthy_outcome_and_unsolicited_routine_outcome_delivery() {
@@ -1031,14 +1015,9 @@ entries.push({ type: "message", message: { role: "user", content: legacyOperatio
 await fire("agent_start", {}, mainCtx);
 const unsolicited = dispatch("signal: healthy resource result");
 if (!unsolicited.accepted) throw new Error("branch did not accept the unsolicited result");
-await settle(() => fleetOperations.length === 2, "unsolicited result acknowledgement");
-if (sentToMain.length !== 1 || sentToMain[0].options.triggerTurn) {
-  throw new Error(`unsolicited healthy result opened a main turn: ${JSON.stringify(sentToMain)}`);
-}
-const sailboat = sentToMain[0];
-if (sailboat.message.display !== true || !sailboat.message.content.startsWith("⛵ branch-driver:")) {
-  throw new Error(`unsolicited healthy result was not a rendered sailboat note: ${JSON.stringify(sailboat)}`);
-}
+await unsolicited.settlement;
+if (fleetOperations.length !== 2) throw new Error("unsolicited result did not complete its drain and acknowledgement");
+if (sentToMain.length !== 0) throw new Error("unsolicited routine outcome entered main context");
 
 const outcomes = mainTools.find((tool) => tool.name === "fm_branch_outcomes");
 if (!outcomes) throw new Error("main did not receive its outcome-reading permission surface");
@@ -1060,7 +1039,8 @@ for (let index = 0; index < requestedPrompts.length; index += 1) {
   await fire("agent_start", {}, mainCtx);
   const requested = dispatch("signal: healthy resource result");
   if (!requested.accepted) throw new Error(`branch did not accept requested result ${index}`);
-  await settle(() => fleetOperations.length === 4 + (index * 2), `requested result ${index} acknowledgement`);
+  await requested.settlement;
+  if (fleetOperations.length !== 4 + (index * 2)) throw new Error(`requested result ${index} did not complete its drain and acknowledgement`);
   const deliveredRequestMirror = globalThis.__fmSessions[0].ops
     .filter((op) => op.kind === "custom" && op.message.customType === "fm-main-mirror")
     .at(-1)?.message.content;
@@ -1086,7 +1066,7 @@ if (mirroredCaptainText.some((text) =>
 }
 if ((globalThis.__fmPrompts ?? []).length !== 5) throw new Error("a handled fleet wake was rerun");
 let processingRequests = sentToMain.filter((sent) => sent.message.customType === "fm-branch-process");
-if (sentToMain.length !== 1 + processingRequests.length) {
+if (sentToMain.length !== processingRequests.length) {
   throw new Error(`captain results entered model delivery as unkeyed messages: ${JSON.stringify(sentToMain)}`);
 }
 if (processingRequests.length !== 1 || processingRequests[0].options.triggerTurn !== true) {
@@ -1498,9 +1478,7 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const noopMerge = sentToMain[sentToMain.length - 1];
-if (noopMerge.options.triggerTurn) throw new Error("a no-op heartbeat pass must not open a main turn");
-if (noopMerge.message.display !== false) throw new Error("a no-op heartbeat pass must not render a merge note");
+if (sentToMain.some((s) => s.message.customType === "fm-branch-merge")) throw new Error("routine heartbeat entered main");
 const storedNoop = readFileSync(`${home}/state/branch-outcomes.jsonl`, "utf8")
   .trim()
   .split("\n")
@@ -1516,11 +1494,7 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const fleetRoutineMerge = sentToMain[sentToMain.length - 1];
-if (fleetRoutineMerge.message.display !== true) throw new Error("a fleet routine action must render");
-if (!fleetRoutineMerge.message.content.startsWith("⛵ fleet: reconciled the backlog after completed work")) {
-  throw new Error(`fleet routine action note changed: ${fleetRoutineMerge.message.content}`);
-}
+if (sentToMain.some((s) => s.message.customType === "fm-branch-merge")) throw new Error("routine action entered main");
 await heartbeatReport.execute(
   "task-routine",
   { task: "task-9", verdict: "routine", summary: "worker healthy, no action needed" },
@@ -1528,11 +1502,7 @@ await heartbeatReport.execute(
   undefined,
   {},
 );
-const taskRoutineMerge = sentToMain[sentToMain.length - 1];
-if (taskRoutineMerge.message.display !== true) throw new Error("a task-scoped routine outcome must render");
-if (!taskRoutineMerge.message.content.startsWith("⛵ task-9: worker healthy, no action needed")) {
-  throw new Error(`task-scoped routine note changed: ${taskRoutineMerge.message.content}`);
-}
+if (sentToMain.some((s) => s.message.customType === "fm-branch-merge")) throw new Error("routine task entered main");
 await heartbeatReport.execute(
   "heartbeat-finding",
   { task: "fleet", verdict: "captain", summary: "task-2 has been stuck for an hour" },
@@ -2005,7 +1975,7 @@ if (existsSync(`${home}/state/.branch-eligible-rows`)) {
 const healthy = dispatch("signal: healthy branch turn");
 if (!healthy.accepted) throw new Error("one provider error latched the branch prematurely");
 await healthy.settlement;
-await settle(() => attempt === 2 && sentToMain.length === 1, "healthy branch report");
+await settle(() => attempt === 2 && sentToMain.length === 0, "healthy branch report");
 if (mainUserMessages.length !== 0) throw new Error("a healthy reported turn fell back to main");
 
 const third = dispatch("signal: provider error after reset");
@@ -2068,10 +2038,8 @@ if (dispatch("signal: inside extended cooldown").accepted) {
 now += 5 * 60 * 1000;
 const recoveryProbe = dispatch("signal: recovery probe after extended cooldown");
 if (!recoveryProbe.accepted) throw new Error("the branch did not re-probe after the extended cooldown elapsed");
-await settle(() => attempt === 6 && sentToMain.some((sent) => sent.message.content.includes("cooldown probe recovered the branch")), "successful recovery probe");
-// The recovery note is emitted when the wake SETTLES, which is after the
-// report note the condition above waits for.
 await recoveryProbe.settlement;
+if (attempt !== 6) throw new Error("recovery probe did not run once");
 if (mainUserMessages.length !== 0) throw new Error("a successful recovery probe also fell back to main");
 const recoveryNotes = sentToMain.filter((sent) => sent.message.content.includes("Supervision branch recovered after a successful cooldown probe"));
 if (recoveryNotes.length !== 1 || recoveryNotes[0].message.content.includes("\n")) {
@@ -2093,7 +2061,8 @@ if (existsSync(`${home}/state/.branch-eligible-rows`)) {
 }
 const afterRecoveryHealthy = dispatch("signal: healthy turn after one post-recovery error");
 if (!afterRecoveryHealthy.accepted) throw new Error("the successful probe did not clear the provider-error streak");
-await settle(() => attempt === 8 && sentToMain.some((sent) => sent.message.content.includes("post-recovery report proved")), "post-recovery healthy report");
+await afterRecoveryHealthy.settlement;
+if (attempt !== 8) throw new Error("post-recovery healthy prompt did not run");
 process.exit(0);
 EOF
   status=$?
@@ -4389,10 +4358,7 @@ if (new Set(seqs).size !== seqs.length) throw new Error(`a sequence was reused: 
 const deliveredRoutine = sentToMain
   .filter((sent) => sent.message.customType === "fm-branch-merge" && sent.message.content.includes("interleaved outcome "))
   .map((sent) => sent.message.content);
-const routineSummaries = interleaved.filter((row) => row.verdict === "routine").map((row) => `⛵ branch-driver: ${row.summary}`);
-if (deliveredRoutine.join("|") !== routineSummaries.join("|")) {
-  throw new Error(`routine notes lost, duplicated, or reordered: ${JSON.stringify(deliveredRoutine)} vs ${JSON.stringify(routineSummaries)}`);
-}
+if (deliveredRoutine.length !== 0) throw new Error("interleaved routine outcomes entered main");
 const deliveredCaptain = mainEntries
   .filter((entry) => entry.customType === "fm-branch-visible-outcome" && entry.data.summary.startsWith("interleaved outcome "))
   .map((entry) => entry.data.seq);
@@ -4614,16 +4580,8 @@ EOF
   pass "a failing store script surfaces to the branch and its outcome is neither lost nor delivered twice"
 }
 
-# The failure boundary the async conversion had to leave exactly as it found
-# it: a routine note is delivered and then its cursor write fails. Routine
-# notes carry no sequence key, so the next reconciliation delivers the same
-# note again - a KNOWN PRE-EXISTING limitation of the routine delivery
-# representation, tracked as fm-pi-routine-delivery-idempotency-followup-r1,
-# not something moving the work off Pi's render thread introduced. This pins
-# the exact shape (one re-delivery, never more, nothing lost) so a future
-# change cannot quietly worsen it, and pins the captain row's sequence-keyed
-# deduplication that makes the two paths differ.
-test_mark_read_failure_keeps_routine_redelivery_and_captain_deduplication() {
+# Cursor-write recovery keeps routine rows private and captain rows exactly once.
+test_mark_read_failure_keeps_routine_private_and_captain_deduplication() {
   local repo home fakebin out status real_bash
   repo="$TMP_ROOT/mark-read-failure-shape-root"
   home="$TMP_ROOT/mark-read-failure-shape-home"
@@ -4669,28 +4627,25 @@ if (!offer.accepted) throw new Error("branch did not accept the wake offer");
 await settle(() => (globalThis.__fmPrompts ?? []).length === 1, "branch wake prompt");
 const report = globalThis.__fmSessions[0].options.customTools.find((tool) => tool.name === "fm_branch_report");
 
-// A routine note is delivered, then its cursor write fails.
+// A routine row is stored, then its cursor write fails.
 const routineSummary = "routine note whose cursor write fails";
 armStoreFailure("mark-read");
 const routineFailed = await report.execute("routine-mark-read-fails", { task: "branch-driver", verdict: "routine", summary: routineSummary }, undefined, undefined, {});
 if (!routineFailed.isError || !routineFailed.content[0].text.includes("visible delivery or cursor advancement failed")) {
   throw new Error(`a failed routine cursor advance did not surface as an error: ${JSON.stringify(routineFailed)}`);
 }
-if (routineCopies(routineSummary) !== 1) {
-  throw new Error(`the routine note was not delivered exactly once before the cursor failure: ${routineCopies(routineSummary)}`);
+if (routineCopies(routineSummary) !== 0) {
+  throw new Error(`routine content leaked before the cursor failure: ${routineCopies(routineSummary)}`);
 }
 let stored = storedRows();
 if (stored.length !== 1) throw new Error(`the failed cursor write changed the store: ${JSON.stringify(stored)}`);
 if (outcomeScript(["unread"]) === "") throw new Error("a failed cursor write still marked the routine row read");
 
-// The next reconciliation re-delivers it, because a routine note has no
-// sequence-keyed record to recognize. That second copy is the pre-existing
-// limitation; what must hold is that it is exactly one more, and that the
-// store and cursor recover.
+// Reconciliation retries the cursor without injecting routine content.
 armStoreFailure("");
 await fire("turn_end", {}, defaultSessionCtx);
-if (routineCopies(routineSummary) !== 2) {
-  throw new Error(`recovery did not re-deliver the routine note exactly once: ${routineCopies(routineSummary)}`);
+if (routineCopies(routineSummary) !== 0) {
+  throw new Error(`routine content leaked during cursor recovery: ${routineCopies(routineSummary)}`);
 }
 if (outcomeScript(["unread"]) !== "") throw new Error("recovery did not advance the cursor past the routine row");
 stored = storedRows();
@@ -4699,8 +4654,8 @@ if (stored.length !== 1) throw new Error(`recovery changed the stored routine ro
 // Once the cursor is past it, no further reconciliation delivers it again:
 // the duplication window is the failed write, not an unbounded repeat.
 await fire("turn_end", {}, defaultSessionCtx);
-if (routineCopies(routineSummary) !== 2) {
-  throw new Error(`the routine note kept being re-delivered after the cursor advanced: ${routineCopies(routineSummary)}`);
+if (routineCopies(routineSummary) !== 0) {
+  throw new Error(`routine content leaked after the cursor advanced: ${routineCopies(routineSummary)}`);
 }
 
 // The same failure on a captain row does NOT duplicate: its visible entry is
@@ -4724,16 +4679,138 @@ if (storedRows().length !== 2) throw new Error(`the store lost or duplicated a r
 finishWakePrompt();
 await offer.settlement.then(() => null, () => null);
 await fire("session_start", {}, defaultSessionCtx);
-if (routineCopies(routineSummary) !== 2 || captainCopies(captainSeq) !== 1) {
+if (routineCopies(routineSummary) !== 0 || captainCopies(captainSeq) !== 1) {
   throw new Error(`a new session re-delivered an already-read outcome: routine=${routineCopies(routineSummary)} captain=${captainCopies(captainSeq)}`);
 }
 process.exit(0);
 EOF
   status=$?
   out=$(cat "$TMP_ROOT/node-output")
-  expect_code 0 "$status" "a failed cursor write must keep the routine re-delivery shape and the captain deduplication: $out"
-  pass "a failed cursor write re-delivers a routine note exactly once more while a captain outcome stays deduplicated"
+  expect_code 0 "$status" "a failed cursor write must keep routine content private and captain delivery deduplicated: $out"
+  pass "a failed cursor write keeps routine outcomes private while a captain outcome stays deduplicated"
 }
+
+test_exact_review_replay_is_tokenless_and_preserves_new_evidence() {
+  local repo home out status
+  repo="$TMP_ROOT/exact-replay-root"
+  home="$TMP_ROOT/exact-replay-home"
+  mkdir -p "$home/state" "$home/config"
+  install_pi_branch_extension_fixture "$repo"
+  mkdir -p "$home/fakebin"
+  cat > "$home/fakebin/mv" <<'SH'
+#!/bin/sh
+for target do :; done
+if [ "${target##*/}" = .wake-queue ] && [ -e "$FM_TEST_FAIL_ACK" ]; then
+  echo 'injected queue acknowledgement failure' >&2
+  exit 23
+fi
+exec /bin/mv "$@"
+SH
+  chmod +x "$home/fakebin/mv"
+  PATH="$home/fakebin:$PATH" FM_TEST_FAIL_ACK="$home/fail-ack" PLUGIN="$repo/.pi/extensions/fm-branch-supervision.ts" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    DRIVER_PRELUDE="$DRIVER_PRELUDE" node --input-type=module > "$TMP_ROOT/node-output" 2>&1 <<'EOF'
+await eval(`(async () => { ${process.env.DRIVER_PRELUDE}; globalThis.__t = { fire, makeOffer, pi, settle, outcomeScript, sentToMain, mainEntries, mainTools, defaultSessionCtx, home, realRoot }; })()`);
+const { fire, makeOffer, pi, settle, outcomeScript, sentToMain, mainEntries, mainTools, defaultSessionCtx, home, realRoot } = globalThis.__t;
+const { writeFileSync, readFileSync, appendFileSync, renameSync, symlinkSync, unlinkSync } = await import('node:fs');
+const meta=`${home}/state/branch-driver.meta`, statusPath=`${home}/state/branch-driver.status`;
+appendFileSync(meta, 'spawn_gen=incarnation-1\n');
+writeFileSync(statusPath, 'working: synthetic review\n');
+const queue=(seq,kind='signal',payload='signal: branch-driver.status')=>{
+ writeFileSync(`${home}/state/.wake-queue`, `1\t${seq}\t${kind}\t${kind==='stale'?'fm-branch-driver':'branch-driver.status'}\t${payload}\n`);
+};
+const offer=()=>{const o=makeOffer('signal: branch-driver.status');pi.events.emit('fm-branch-supervision:dispatch',o);
+if (!o.accepted)throw Error('unexpected decline');return o.settlement;};
+const count=()=>globalThis.__fmPrompts?.length??0;
+let verdict='captain';
+let gate;
+let failContinuation=false;
+globalThis.__fmOnBranchPrompt=async({session})=>{
+ if(gate)await gate;
+ const report=session.options.customTools.find(t=>t.name==='fm_branch_report');
+ const result=await report.execute('report',{task:'branch-driver',verdict,summary:'Synthetic handled event'},undefined,undefined,{});
+ if(result.isError)throw Error(JSON.stringify(result));
+ if(failContinuation)throw Error('injected failed continuation after durable report');
+};
+await fire('session_start',{},defaultSessionCtx);
+queue(1);
+let release;gate=new Promise(r=>release=r);
+const first=offer();
+await settle(()=>count()===1,'first review');
+const duplicate=offer();release();
+gate=null;
+await Promise.all([first,duplicate]);
+if(count()!==1)throw Error('duplicate before settlement made another prompt');
+if(readFileSync(`${home}/state/.wake-queue`,'utf8')!=='')throw Error('receipt did not acknowledge row');
+await offer();
+if (count()!==1)throw Error('duplicate after ack made another prompt');
+if(mainEntries.filter(e=>e.customType==='fm-branch-visible-outcome').length!==1)throw Error('actionable delivery duplicated');
+if(!outcomeScript(['unprocessed']).includes('Synthetic handled event'))throw Error('receipt swallowed unprocessed captain result');
+verdict='routine';
+queue(2);
+await offer();
+if (count()!==2)throw Error('new sequence with same status was hidden');
+// New informational answer plus trailing routine is not covered by row 2.
+appendFileSync(statusPath,'note: requested answer\nworking: still running\n');
+await offer();
+if (count()!==3)throw Error('unread answer after report was hidden');
+// A same-size rewrite invalidates coverage even when the inode is retained.
+writeFileSync(statusPath,'note: requested answer\nworking: still running\n');
+await offer();
+if (count()!==4)throw Error('status rewrite was hidden');
+renameSync(statusPath,`${statusPath}.old`);
+writeFileSync(statusPath,'working: replacement log\n');
+await offer();
+if (count()!==5)throw Error('status replacement was hidden');
+writeFileSync(meta,readFileSync(meta,'utf8').replace('spawn_gen=incarnation-1','spawn_gen=incarnation-2'));
+await offer();
+if (count()!==6)throw Error('task replacement was hidden');
+// A real future stale row stays eligible even with unchanged task status.
+queue(3,'stale','stale: fm-branch-driver (possible wedge, escalation 1)');
+await offer();
+queue(4,'stale','stale: fm-branch-driver (possible wedge, escalation 2)');
+await offer();
+if(count()!==8)throw Error('future stale escalation was hidden');
+// Ack failure preserves the durable row and reaches fallback without a model.
+writeFileSync(process.env.FM_TEST_FAIL_ACK,'fail');
+const ackError=await offer().then(()=>null,e=>e);
+if(!ackError || !readFileSync(`${home}/state/.wake-queue`,'utf8'))throw Error('ack failure lost its row or fallback');
+if(count()!==8)throw Error('ack failure invoked another review');
+unlinkSync(process.env.FM_TEST_FAIL_ACK);
+// A new main session recovers the exact retained delivery without a prompt.
+await fire('session_shutdown',{reason:'reload'},defaultSessionCtx);
+await fire('session_start',{reason:'reload'},defaultSessionCtx);
+await offer();
+if(count()!==8)throw Error('reload repeated an unchanged reviewed event');
+if(!outcomeScript(['unprocessed']).includes('Synthetic handled event'))throw Error('reload lost unprocessed captain outcome');
+// Unknown evidence gets no receipt, so repeated delivery must remain reviewable.
+unlinkSync(statusPath);symlinkSync(`${statusPath}.old`,statusPath);
+queue(5);
+await offer();
+await offer();
+if (count()!==10)throw Error('unknown status was silently absorbed');
+// A report followed by a failed continuation does not authorize suppression.
+unlinkSync(statusPath);
+writeFileSync(statusPath,'working: continuation proof\n');
+queue(6);
+failContinuation=true;
+const continuationError=await offer().then(()=>null,e=>e);
+if(!continuationError || count()!==11)throw Error('failed continuation did not reject');
+failContinuation=false;
+await offer();
+if (count()!==12)throw Error('report before failed continuation suppressed recovery');
+await offer();
+if (count()!==12)throw Error('successful continuation was not reusable');
+if(sentToMain.some(s=>s.message.customType==='fm-branch-merge'))throw Error('routine messages leaked');
+console.log('REPLAY_OK');
+process.exit(0);
+EOF
+  status=$?
+  out=$(cat "$TMP_ROOT/node-output")
+  expect_code 0 "$status" "exact replay and changing evidence: $out"
+  pass "exact replay skips prompts across settlement and reload while new events, answers, identity changes and staleness remain reviewable"
+}
+
+test_exact_review_replay_is_tokenless_and_preserves_new_evidence
 
 test_outcomes_tool_uses_stock_execution_and_export_consumers
 test_real_pi_picker_primitives_stay_bounded_and_searchable
@@ -4774,4 +4851,4 @@ test_rebind_remirrors_undelivered_dialog_from_durable_cursor
 test_delivery_keeps_the_event_loop_live_and_ordered
 test_session_replacement_during_delivery_neither_loses_nor_duplicates
 test_store_failure_during_delivery_neither_loses_nor_duplicates
-test_mark_read_failure_keeps_routine_redelivery_and_captain_deduplication
+test_mark_read_failure_keeps_routine_private_and_captain_deduplication

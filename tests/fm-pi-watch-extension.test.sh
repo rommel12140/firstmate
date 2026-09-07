@@ -459,7 +459,7 @@ import { pathToFileURL } from "node:url";
 // branch listener the wake must be owned by the branch (no main follow-up);
 // with a bus but no acceptor the dispatcher must fall back to main. The
 // divergence between the two runs is asserted, so the case cannot go vacuous.
-async function runScenario(withAcceptor) {
+async function runScenario(withAcceptor, empty = false) {
   writeFileSync(process.env.FM_ARM_LOG, "");
   const offers = [];
   let mainPrompt = "";
@@ -495,7 +495,7 @@ async function runScenario(withAcceptor) {
   mod.default(pi);
   await tool.execute("tool-call-branch-offer", {}, undefined, undefined, {});
   for (let i = 0; i < 250; i += 1) {
-    const settled = withAcceptor ? offers.length > 0 : mainPrompt !== "";
+    const settled = empty ? i >= 40 : withAcceptor ? offers.length > 0 : mainPrompt !== "";
     if (settled) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -526,6 +526,13 @@ if (!declined.mainPrompt.includes("FIRSTMATE WATCHER WAKE")) {
 if (!declined.mainPrompt.includes("signal: branch-offer synthetic wake")) {
   throw new Error(`fallback wake lost the reason line: ${declined.mainPrompt}`);
 }
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "");
+const consumed = await runScenario(true, true);
+if (consumed.offers.length || consumed.mainPrompt) throw new Error("empty durable wake invoked branch or main");
+if (!consumed.rows.some(row => row.startsWith("confirmed generation="))) throw new Error("empty wake skipped rearm confirmation");
+writeFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "malformed row\n");
+const unknown = await runScenario(false);
+if (!unknown.mainPrompt.includes("FIRSTMATE WATCHER WAKE")) throw new Error("unknown queue was silently absorbed");
 writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 process.exit(0);
 EOF
