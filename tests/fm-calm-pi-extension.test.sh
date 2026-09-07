@@ -2,6 +2,9 @@
 # Focused rendering, lifecycle, persistence, and interactive TUI checks for /calm.
 set -u
 
+# TypeScript runtime warnings are host diagnostics, not extension output.
+export NODE_NO_WARNINGS=1
+
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -893,10 +896,19 @@ const cases = [
   ["ls", { path: "." }, { content: [{ type: "text", text: "sample.txt" }], details: {}, isError: false }],
 ];
 const renderUi = { requestRender() {} };
+// A missing definition renders a generic fallback in Pi 0.85. Use the same
+// public built-in factories as Pi's tool registry for the stock comparison.
+const builtins = await import("@earendil-works/pi-coding-agent");
+const stockDefinitions = new Map([
+  builtins.createReadToolDefinition, builtins.createBashToolDefinition,
+  builtins.createEditToolDefinition, builtins.createWriteToolDefinition,
+  builtins.createGrepToolDefinition, builtins.createFindToolDefinition,
+  builtins.createLsToolDefinition,
+].map(factory => { const definition = factory(process.cwd()); return [definition.name, definition]; }));
 const rows = [];
 for (const [name, args, result] of cases) {
   const wrapped = tools.find((tool) => tool.name === name);
-  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, undefined, renderUi, process.cwd());
+  const baseline = new ToolExecutionComponent(name, `baseline-${name}`, args, { showImages: false }, stockDefinitions.get(name), renderUi, process.cwd());
   const actual = new ToolExecutionComponent(name, `wrapped-${name}`, args, { showImages: false }, wrapped, renderUi, process.cwd());
   for (const row of [baseline, actual]) {
     row.markExecutionStarted();
@@ -1826,9 +1838,18 @@ TS
       fail "Pi follow-up $label case did not process the monitoring notification"
     fi
 
-    pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
+    # Persistence precedes Pi's scheduled terminal frame. Wait for the rendered
+    # completion before counting answers, so a pending frame cannot look like a
+    # missing or duplicate reply.
+    i=0
+    while [ "$i" -lt 120 ]; do
+      pane=$(tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" -S - 2>/dev/null || true)
+      printf '%s\n' "$pane" | grep -Fq "MONITOR_HANDLED_${label}_ONE" && break
+      sleep 0.05
+      i=$((i + 1))
+    done
     [ "$(printf '%s\n' "$pane" | grep -Fc "CAPTAIN_ANSWER_$label" || true)" -eq 1 ] \
-      || fail "Pi follow-up $label case rendered a duplicate captain answer"
+      || fail "Pi follow-up $label case did not render exactly one captain answer: $pane"
     assert_contains "$pane" "CAPTAIN_PROMPT_$label" "Pi follow-up $label case hid the genuine captain prompt"
     assert_contains "$pane" "MONITOR_HANDLED_${label}_ONE" "Pi follow-up $label case did not render the intended processing result"
     if [ "$calm_state" = on ]; then
@@ -2144,7 +2165,7 @@ TS
   i=0
   while [ "$i" -lt 120 ]; do
     capture_geometry_viewport "$snapshot"
-    tail -12 "$snapshot" | grep -Fq "Working..." || break
+    tail -12 "$snapshot" | grep -Fq "Working" || break
     sleep 0.05
     i=$((i + 1))
   done
@@ -3672,7 +3693,7 @@ JS
   done
   cp "$working_snapshot" "$boat_frame_one"
   assert_contains "$(cat "$boat_frame_one")" '\__/' "Calm did not show the working ship during a real provider wait"
-  assert_not_contains "$(cat "$boat_frame_one")" "Working..." "Calm left Pi's stock working row visible while the ship was shown"
+  assert_not_contains "$(cat "$boat_frame_one")" "Working" "Calm left Pi's stock working row visible while the ship was shown"
   assert_not_contains "$(cat "$boat_frame_one")" "calm transcript" "the real provider wait showed a persistent Calm status row"
   assert_not_contains "$(cat "$boat_frame_one")" "FIRSTMATE WATCHER WAKE: signal: /tmp/probe.status" "the real provider wait restored a hidden operational row"
   boat_hull_line=$(grep -F '\__/' "$boat_frame_one" | head -1)
@@ -3878,7 +3899,7 @@ JS
     || fail "the second working period reset the boat from column $boat_freeze_column to $boat_resume_column instead of resuming"
   [ "$boat_resume_sail" = "$boat_freeze_sail" ] \
     || fail "the second working period changed sail from $boat_freeze_sail to $boat_resume_sail"
-  assert_not_contains "$(cat "$boat_resume_snapshot")" "Working..." \
+  assert_not_contains "$(cat "$boat_resume_snapshot")" "Working" \
     "the second working period left Pi's stock working row visible"
 
   # Clear the resumed run before the Calm-off stock-row probe.
@@ -3894,7 +3915,10 @@ JS
   done
   assert_not_contains "$(cat "$boat_cleared_snapshot")" '\__/' "Escape did not remove the resumed working ship"
 
-  # Calm off restores Pi's stock working row and never shows the ship.
+  # Pi 0.85 embeds "Working" in the editor border; earlier releases append
+  # punctuation in a separate row. The native check accepts both placements and
+  # also proves the fixture is still running and the Calm ship is absent.
+  # Calm off restores Pi's stock working indicator and never shows the ship.
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" -l "/calm"
   tmux -L "$TMUX_SOCKET" send-keys -t "$TMUX_SESSION" M-s
   active_screen_wait=0
@@ -3911,13 +3935,14 @@ JS
   active_screen_wait=0
   while [ "$active_screen_wait" -lt 200 ]; do
     tmux -L "$TMUX_SOCKET" capture-pane -p -t "$TMUX_SESSION" >"$working_snapshot"
-    if grep -Fq "Working..." "$working_snapshot"; then
+    if grep -Fq "Working" "$working_snapshot"; then
       break
     fi
     sleep 0.025
     active_screen_wait=$((active_screen_wait + 1))
   done
-  assert_contains "$(cat "$working_snapshot")" "Working..." "Calm off did not keep Pi's stock working row"
+  assert_contains "$(cat "$working_snapshot")" "Working" "Calm off did not keep Pi's stock working indicator"
+  assert_not_contains "$(cat "$working_snapshot")" "CALM_WORKING_E2E_RESPONSE" "the stock working probe had already settled"
   assert_not_contains "$(cat "$working_snapshot")" '\__/' "Calm off showed the working ship"
   wait_for_text "$working_response_snapshot" "CALM_WORKING_E2E_RESPONSE" \
     || fail "the deterministic provider did not settle after proving Pi's stock working row"

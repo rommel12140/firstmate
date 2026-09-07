@@ -223,7 +223,7 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-ensure-agents-md.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-muse-harness.test.sh|fm-rovo-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-lint-workflows.test.sh|\
-    fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-operational-input.test.sh|fm-pi-primary-types.test.sh|fm-pi-status.test.sh|\
     fm-safety-surface-check.test.sh|\
     fm-harness-adapter-references.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
@@ -1242,6 +1242,10 @@ families_for_changed_path() {
       ;;
     bin/fm-quota-choose.sh)
       printf '%s\n' "__script__:fm-quota-choose.test.sh"
+      ;;
+    .pi/extensions/fm-primary-status.ts|.pi/extensions/lib/fm-quota-status.ts|tests/fm-pi-status.test.mjs)
+      printf '%s\n' __script__:fm-pi-status.test.sh
+      printf '%s\n' __script__:fm-pi-primary-types.test.sh
       ;;
     .pi/extensions/fm-branch-supervision.ts|.pi/extensions/lib/fm-async-exec.ts|\
     .pi/extensions/lib/fm-branch-dispatch.ts)
