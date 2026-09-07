@@ -171,11 +171,27 @@ test_pi_snippet_uses_effective_extension_path() {
   assert_contains "$out" "The turn-end guard extension lives at \`$turnend\`" "pi snippet did not render the turn-end guard extension path"
   assert_contains "$out" "The watcher extension lives at \`$watch\`" "pi snippet did not render the watcher extension path"
   assert_contains "$out" "MAIN must not re-drain, re-run, or acknowledge it" "pi snippet lost merged-event ownership"
-  assert_contains "$out" "MAIN applies judgment about whether and how to surface, summarize, reference, or incorporate a merged sailboat outcome" "pi snippet imposed a mechanical sailboat treatment"
   assert_not_contains "$out" "__FM_PI_EXT__" "renderer leaked the Pi extension path placeholder"
   assert_not_contains "$out" "__FM_PI_TURNEND_EXT__" "renderer leaked the Pi turn-end extension path placeholder"
   assert_not_contains "$out" "state/fm-primary-pi-watch.ts" "pi snippet kept the old generated state-relative extension path"
   pass "pi supervision snippet renders the effective extension path"
+}
+
+test_pi_family_keeps_routine_outcomes_private() {
+  local home out harness
+  home="$TMP_ROOT/pi-private-outcomes-home"
+  mkdir -p "$home/state" "$home/config"
+  for harness in pi pi-signed; do
+    out=$(FM_HOME="$home" "$RENDER" --harness "$harness")
+    assert_contains "$out" "Routine outcomes remain in the private durable store with no transcript note or model-context message." "$harness lost private routine handling"
+    assert_contains "$out" "A captain-facing outcome instead appears as one exact, sequence-keyed visible transcript entry" "$harness hid actionable outcomes with routine content"
+    assert_contains "$out" "call the \`fm_branch_processed\` tool with the highest sequence the request listed, exactly once" "$harness lost actionable processing acknowledgement"
+    assert_contains "$out" "An ordinary wake with no finished result, decision, blocker, or failure needs no captain-facing response." "$harness lost the no-result response rule"
+    assert_contains "$out" "Do not reply to an empty drain with an unchanged status confirmation." "$harness lost empty-drain response suppression"
+    assert_contains "$out" "Read the durable outcome store with the fm_branch_outcomes tool when the captain asks what happened." "$harness lost on-demand routine observability"
+    assert_not_contains "$out" "incorporate a merged sailboat outcome" "$harness retained the superseded routine-presentation instruction"
+  done
+  pass "Pi and Pi-signed keep routine outcomes private while preserving actionable and requested delivery"
 }
 
 test_selected_harness_block_only
@@ -187,3 +203,5 @@ test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
 test_pi_snippet_uses_effective_extension_path
+
+test_pi_family_keeps_routine_outcomes_private
