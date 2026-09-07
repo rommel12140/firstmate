@@ -200,33 +200,18 @@ export function resetCountdown(reset: number, now: number): string {
   return `${minutes}m`;
 }
 const pct = (value: number) => Number(value.toFixed(1)).toString();
-function windowDuration(seconds: number): string {
-  if (seconds % 86400 === 0) return `${seconds / 86400}d`;
-  if (seconds % 3600 === 0) return `${seconds / 3600}h`;
-  if (seconds % 60 === 0) return `${seconds / 60}m`;
-  return `${seconds}s`;
-}
 export function quotaSegments(snapshot: QuotaSnapshot, now: number): string[] {
-  const prefix = `${snapshot.provider === "codex" ? "Codex" : "Claude"} account quota (Pi link unverified)`;
+  // Account-level data, not an assertion that Pi uses the same credentials.
+  // Model-specific and short windows belong in the full quota report, not here.
+  const prefix = `${snapshot.provider === "codex" ? "Codex" : "Claude"} account week`;
   const current = snapshot.state === "fresh" && snapshot.at !== undefined && now >= snapshot.at && now - snapshot.at < QUOTA_FRESH_MS;
   const state = current ? "" : snapshot.state === "fresh" || snapshot.state === "stale" ? "STALE" : snapshot.state.toUpperCase();
-  if (snapshot.windows.length === 0) return [`${prefix}: ${state || "unavailable"}`];
-  const segments = [prefix + (state ? `: ${state}` : "")];
-  for (const w of snapshot.windows) {
-    const period = w.seconds ? windowDuration(w.seconds) : undefined;
-    const duration = period && w.label !== period ? ` (${period})` : "";
-    const label = `${w.kind === "model" ? "model " : ""}${w.label}${duration}`;
-    if (w.reset !== undefined && now >= w.reset) {
-      segments.push(`${label}: USED ? LEFT ? | reset passed`);
-      continue;
-    }
-    const values = w.used !== undefined && w.left !== undefined
-      ? `${pct(w.used)}% USED ${pct(w.left)}% LEFT` : "USED ? LEFT ?";
-    const reset = w.reset === undefined ? "reset unknown" : `reset ${resetCountdown(w.reset, now)}`;
-    segments.push(`${label}: ${current ? "" : "STALE last "}${values} | ${reset}`);
-  }
-  if (snapshot.provider === "codex" && !snapshot.windows.some(w => w.kind === "session")) {
-    segments.push("account short window: unavailable");
-  }
-  return segments;
+  const weekly = snapshot.windows.filter(w => w.kind === "weekly");
+  // Never substitute a model's week or guess between multiple account windows.
+  if (weekly.length !== 1) return [`${prefix}: ${state || "unavailable"}`];
+  const w = weekly[0];
+  if (w.reset !== undefined && now >= w.reset) return [`${prefix}: remaining unknown | reset passed`];
+  const value = w.left !== undefined ? `${pct(w.left)}% left` : "remaining unknown";
+  const reset = w.reset === undefined ? "reset unknown" : `reset ${resetCountdown(w.reset, now)}`;
+  return [`${prefix}: ${current ? "" : `${state} last `}${value} | ${reset}`];
 }

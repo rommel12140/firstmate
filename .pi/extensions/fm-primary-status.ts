@@ -17,10 +17,10 @@ export function statusLines(ctx: Pick<ExtensionContext, "model" | "thinkingLevel
   const provider = quotaProviderFor(ctx.model);
   const segments = [
     `Model ${model} | Effort ${effort} | Context ${context}`,
-    ...(provider ? quotaSegments(cache.get(provider), now) : ["Account quota unavailable (unsupported provider/endpoint)"]),
+    ...(provider ? quotaSegments(cache.get(provider), now) : ["Account week: unavailable"]),
   ];
-  // Keep complete windows visible: wrapping must never hide a short-window
-  // exhaustion behind a later weekly reading or truncate a safety qualifier.
+  // Wrap the compact weekly summary without overflowing narrow terminals or
+  // truncating a stale/unknown marker.
   const rows: string[] = [];
   let line = "";
   for (const segment of segments) {
